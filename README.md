@@ -38,6 +38,9 @@ Drei Transportwege, alle vom selben Modul bedient:
 | TCP | `192.168.1.42:23` | ESP-WLAN-Brücke (botvac-wifi) oder `ser2net` |
 | HTTP | `http://neato.local` | [OpenNeato](https://github.com/renjfk/OpenNeato) auf einem ESP32-C3 |
 
+Für die TCP-Variante liegt in [`esp8266/`](esp8266/) eine passende Brücken-Firmware
+(`neato_bridge.ino`), getestet mit dem Layout des NodeMCU LoLin V3 (ESP-12F).
+
 **Wichtig:** Über USB verweigert der Roboter die Reinigung mit Fehler
 `220 – Please put my Dirt Bin back in.` bzw. „unplug USB before cleaning“.
 USB ist zum Erkunden und Entwickeln gut, für den Dauerbetrieb gehört die
@@ -111,14 +114,33 @@ was aus Quellen belegt und was noch offen ist.
   weiterhin selbst, aber ohne gespeicherte Karte.
 * **Firmware-Updates.** Gab es nur über die Cloud.
 
+## Ohne Roboter testen
+
+`tools/neato_sim.py` emuliert die Konsole eines Botvac über TCP – inklusive
+Kommando-Echo, `Ctrl-Z`-Terminator, CSV-Ausgaben und plausiblem Verhalten
+(Akku entlädt sich beim Saugen, lädt in der Basis):
+
+```
+python3 tools/neato_sim.py
+```
+
+```
+define Staubsauger NeatoLocal 127.0.0.1:8888
+set Staubsauger startCleaning
+```
+
+Mit `--usb` verhält sich der Simulator wie ein Roboter mit angestecktem
+USB-Host und verweigert die Reinigung mit Fehler 220 – damit lässt sich der
+Fehlerpfad testen, ohne ihn provozieren zu müssen.
+
 ## Tests
 
 ```
-perl tools/check_module.pl
+perl tools/check_module.pl    # Modul: Laden, Transporterkennung, Parser
+python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
 ```
 
-Prüft Ladbarkeit, Transporterkennung und die Parser gegen echte Konsolenausgaben –
-ohne FHEM-Installation und ohne Roboter.
+Beide laufen ohne FHEM-Installation und ohne Roboter.
 
 ## Lizenz
 

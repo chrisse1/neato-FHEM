@@ -44,7 +44,7 @@ Kartenrand-Stecker auf Ober- und Unterseite der Hauptplatine, beschriftet
 
 * ESP32-C3 (z. B. „Super Mini“, ~3 €). **Mindestens 4 MB Flash** – die
   2-MB-Varianten reichen für OpenNeato nicht.
-  Für die älteren Modelle tut es auch ein ESP8266 (≥ 1 MB) mit `botvac-wifi`.
+  Ein ESP8266 (≥ 1 MB) tut es auch, siehe unten.
 * JST-XH-2,54-mm-4-Pin-Steckverbinder mit vorgecrimpten Litzen
 * T10 Torx **Security** Bit zum Öffnen des Roboters
 * Lötkolben
@@ -76,6 +76,36 @@ Zwei erprobte Optionen, beide funktionieren mit diesem FHEM-Modul:
 * **[botvac-wifi](https://github.com/sstadlberger/botvac-wifi)** (ältere
   Modelle, ESP8266) – Websocket/HTML-Interface. Sendet aus Sicherheitsgründen
   automatisch `TestMode off`, wenn ein Client die Verbindung trennt.
+
+* **[neato_bridge](../esp8266/)** (dieses Repo, ESP8266) – dumme TCP-zu-UART-
+  Brücke, die gesamte Logik bleibt im FHEM-Modul.
+  FHEM: `define Staubsauger NeatoLocal neato.local:23`
+
+## ESP8266 statt ESP32-C3
+
+Ein vorhandener ESP8266 (NodeMCU LoLin V3, ESP-12F o. ä.) funktioniert für
+D3–D7 genauso, die Konsole ist dieselbe. Drei Punkte sind anders:
+
+1. **Nur eine brauchbare UART.** UART0 liegt normalerweise auf GPIO1/GPIO3 –
+   dort gibt das Boot-ROM beim Reset seinen Startmüll mit 74880 Baud aus, der
+   sonst in der Roboterkonsole landet. `Serial.swap()` legt UART0 nach dem Boot
+   auf GPIO13/GPIO15; nur diese beiden Pins gehen an den Roboter.
+   Verdrahtung: Roboter TX → **D7/GPIO13**, Roboter RX → **D8/GPIO15**.
+2. **Stromversorgung am 3V3-Pin, nicht an Vin/VU.** Vin läuft über den
+   AMS1117-Regler des Boards. Und niemals USB und Roboter-3,3 V gleichzeitig –
+   dann treiben Regler und Roboter dieselbe Schiene gegeneinander. Also: über
+   USB flashen, USB abziehen, dann anschließen.
+3. **Höhere Stromspitzen als beim ESP32-C3.** 220 µF Elko plus 100 nF direkt am
+   Modul zwischen 3V3 und GND einplanen.
+
+Der Formfaktor eines LoLin V3 ist für den Dauereinbau unhandlich – zum
+Entwickeln und Testen ist er völlig in Ordnung, für den fertigen Aufbau ist ein
+ESP32-C3 Super Mini die bessere Wahl.
+
+## Ganz ohne Hardware testen
+
+`tools/neato_sim.py` emuliert die Konsole über TCP. Damit lässt sich das
+FHEM-Modul vollständig durchtesten, bevor der erste Lötkolben heiß wird.
 
 Wer keine ESP-Firmware bauen will, kann den Roboter auch per USB an einen
 Raspberry Pi Zero hängen und `ser2net` laufen lassen – dann greift aber wieder

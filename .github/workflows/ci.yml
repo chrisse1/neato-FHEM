@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  module:
+    name: FHEM module and simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check 74_NeatoLocal.pm
+        run: perl tools/check_module.pl
+
+      - name: Check the console simulator
+        run: python3 tools/check_sim.py
+
+  firmware:
+    name: ESP8266 bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile neato_bridge
+        uses: arduino/compile-sketches@v1
+        with:
+          fqbn: esp8266:esp8266:nodemcuv2
+          platforms: |
+            - name: esp8266:esp8266
+              source-url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          sketch-paths: |
+            - esp8266/neato_bridge
+          enable-warnings-report: true
