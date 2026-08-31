@@ -1,0 +1,1 @@
+UPD 2026-08-31_07:29:31 33945 FHEM/74_NeatoLocal.pm
