@@ -63,7 +63,8 @@ Ausführlich in [docs/flashing-esp32c3.md](../docs/flashing-esp32c3.md), kurz:
 2. Board: **Nologo ESP32C3 Super Mini** (hat USB CDC fest an) oder
    **ESP32C3 Dev Module** mit **USB CDC On Boot: Enabled** – sonst bleibt der
    serielle Monitor stumm.
-3. Partition Scheme „Default 4MB with spiffs", sonst kein OTA.
+3. Partition Scheme **„Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)"** –
+   der Sketch belegt sonst 79 % der App-Partition.
 4. Der C3 meldet sich per nativem USB, meist als `/dev/ttyACM0`.
 5. Oben in `neato_bridge.ino` `WIFI_SSID` und `WIFI_PSK` eintragen.
 6. Hochladen, seriellen Monitor auf 115200 öffnen. Startet der Upload nicht:
@@ -133,7 +134,14 @@ sie hält sonst die Schnittstelle.
 
 ## Verifizierter Build
 
-Die CI übersetzt den Sketch bei jedem Push für **beide** Boards. Die
-Belegungswerte stehen im jeweiligen Lauf; für den ESP8266 mit Core 3.1.2 waren
-es zuletzt 291 KB Code und 92 % IRAM – letzteres ist der Grund, hier keine
-weiteren Bibliotheken aufzunehmen.
+Die CI übersetzt den Sketch bei jedem Push für **beide** Boards, den C3 mit
+genau den Optionen, die die Anleitung empfiehlt.
+
+| | ESP32-C3 | ESP8266 |
+|---|---|---|
+| Programm | 1 045 KB (53 % von 1,9 MB) | 291 KB (28 % von 1 MB) |
+| RAM global | 41,9 KB (12 %) | 28,9 KB (36 %) |
+| Besonderheit | – | IRAM zu 92 % belegt |
+
+Die 92 % IRAM auf dem ESP8266 sind für einen ESP8266 mit WLAN normal, aber der
+Grund, hier keine weiteren Bibliotheken aufzunehmen.

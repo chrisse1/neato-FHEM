@@ -28,7 +28,7 @@ jobs:
       matrix:
         include:
           - name: ESP32-C3
-            fqbn: esp32:esp32:esp32c3
+            fqbn: esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,FlashSize=4M
             platform: esp32:esp32
             source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
           - name: ESP8266

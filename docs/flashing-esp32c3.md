@@ -34,10 +34,24 @@ Board: **ESP32C3 Dev Module**, dann diese Einstellungen:
 | Menüpunkt | Wert | Warum |
 |---|---|---|
 | **USB CDC On Boot** | **Enabled** | Vorgabe ist *Disabled*. Ohne das bleibt der serielle Monitor stumm und `Serial` landet auf GPIO20/21. |
-| Partition Scheme | Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS) | enthält zwei App-Partitionen, sonst kein OTA |
+| **Partition Scheme** | **Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)** | siehe unten |
 | Flash Size | 4MB (32Mb) | |
 | Upload Speed | 921600 | bei Abbrüchen 115200 |
 | JTAG Adapter | Disabled | |
+
+### Warum nicht das Standard-Partitionsschema
+
+Der Sketch belegt **1 045 321 Byte**. In der Vorgabe „Default 4MB with spiffs"
+stehen dafür 1 310 720 Byte zur Verfügung – das sind **79 %**, und OTA-Updates
+brauchen eine zweite App-Partition derselben Größe. Es geht, aber der Puffer
+ist dünn.
+
+„Minimal SPIFFS" gibt der App 1 966 080 Byte, damit liegt die Auslastung bei
+53 %. Das Dateisystem schrumpft dabei auf 128 KB – die Brücke benutzt keines,
+also kostet das nichts.
+
+Beide Schemata haben zwei App-Partitionen und können OTA. Was **nicht** geht,
+sind die Varianten mit „No OTA" im Namen.
 
 **USB CDC On Boot ist der Punkt, an dem es sonst schiefgeht.** Wenn der
 serielle Monitor leer bleibt, ist fast immer das die Ursache.
@@ -154,11 +168,11 @@ arduino-cli core install esp32:esp32 \
   --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
 arduino-cli compile \
-  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=default,FlashSize=4M \
+  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,FlashSize=4M \
   firmware/neato_bridge
 
 arduino-cli upload -p /dev/ttyACM0 \
-  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=default,FlashSize=4M \
+  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,FlashSize=4M \
   firmware/neato_bridge
 
 arduino-cli monitor -p /dev/ttyACM0 -c baudrate=115200
@@ -169,7 +183,7 @@ SSID und Passwort lassen sich auch beim Übersetzen setzen, ohne die Datei zu
 
 ```sh
 arduino-cli compile \
-  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=default,FlashSize=4M \
+  --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,FlashSize=4M \
   --build-property 'compiler.cpp.extra_flags=-DWIFI_SSID="MeinWLAN" -DWIFI_PSK="geheim"' \
   firmware/neato_bridge
 ```
