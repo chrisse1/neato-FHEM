@@ -21,18 +21,30 @@ jobs:
         run: python3 tools/check_dump.py
 
   firmware:
-    name: ESP8266 bridge
+    name: Bridge (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ESP32-C3
+            fqbn: esp32:esp32:esp32c3
+            platform: esp32:esp32
+            source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          - name: ESP8266
+            fqbn: esp8266:esp8266:nodemcuv2
+            platform: esp8266:esp8266
+            source-url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
     steps:
       - uses: actions/checkout@v4
 
       - name: Compile neato_bridge
         uses: arduino/compile-sketches@v1
         with:
-          fqbn: esp8266:esp8266:nodemcuv2
+          fqbn: ${{ matrix.fqbn }}
           platforms: |
-            - name: esp8266:esp8266
-              source-url: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+            - name: ${{ matrix.platform }}
+              source-url: ${{ matrix.source-url }}
           sketch-paths: |
-            - esp8266/neato_bridge
+            - firmware/neato_bridge
           enable-warnings-report: true

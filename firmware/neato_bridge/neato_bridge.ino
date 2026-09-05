@@ -4,7 +4,12 @@
  * Bridges a TCP connection to the robot's serial console, which is exactly what
  * 74_NeatoLocal.pm expects on its TCP transport:
  *
- *     define Staubsauger NeatoLocal <ip-of-this-esp>:23
+ *     define Staubsauger NeatoLocal <ip-of-this-board>:23
+ *
+ * Builds for both boards from the same source:
+ *
+ *   ESP32-C3  (recommended, e.g. "Super Mini")  -- fqbn esp32:esp32:esp32c3
+ *   ESP8266   (NodeMCU LoLin V3, ESP-12F)       -- fqbn esp8266:esp8266:nodemcuv2
  *
  * The bridge stays deliberately dumb: it does not parse, buffer by command or
  * rewrite anything, so the FHEM module keeps full control of the console. Two
@@ -15,37 +20,45 @@
  *   - a small status page on port 80, because once this board is glued inside
  *     the robot there is no other way to see whether it is alive.
  *
- * Target: ESP8266 (tested layout: NodeMCU LoLin V3 / ESP-12F, 4 MB flash).
+ * WIRING -- the robot's debug header is RX | 3.3V | TX | GND (left to right).
+ * TX and RX are crossed:
  *
- * WIRING (ESP8266 side, UART0 swapped to the secondary pins)
+ *   ESP32-C3        Robot TX -> GPIO4 (RX)    Robot RX <- GPIO5 (TX)
+ *   ESP8266         Robot TX -> D7/GPIO13     Robot RX <- D8/GPIO15
+ *   both            GND -- GND,  robot 3.3V -> the board's 3V3 pin
  *
- *     Robot TX  -> D7 / GPIO13   (ESP RX)
- *     Robot RX  <- D8 / GPIO15   (ESP TX)
- *     Robot GND -- GND
- *     Robot 3V3 -> 3V3 pin       (NOT Vin/VU -- that would feed the regulator)
+ * Never feed the board from USB and the robot at the same time: flash over USB
+ * with the robot disconnected, unplug USB, then connect the robot. A 220 uF
+ * electrolytic plus 100 nF across 3V3/GND at the module absorbs the WiFi
+ * transmit peaks.
  *
- * Why the swap: UART0 normally sits on GPIO1/GPIO3, which is also where the
- * ESP8266 boot ROM prints its startup chatter at 74880 baud. Serial.swap()
- * moves the port to GPIO13/GPIO15 after boot, so none of that noise ever
- * reaches the robot's console. Everything this sketch prints before the swap
- * goes to the USB serial monitor -- that is your only feedback while flashing,
- * so watch it at 115200 baud.
+ * Serial layout differs per board, and that difference is the reason the C3 is
+ * the nicer target:
  *
- * GPIO15 carries the usual boot pulldown, so the robot's RX line sits low until
- * this sketch starts. That is a harmless break condition for the console.
- *
- * POWER: flash over USB with the robot disconnected, then unplug USB before
- * connecting the robot's 3.3 V. Never feed both at once -- the board regulator
- * and the robot would fight over the same rail. A 220 uF electrolytic plus
- * 100 nF across 3V3/GND right at the module absorbs the WiFi transmit peaks,
- * which are noticeably higher on an ESP8266 than on an ESP32-C3.
+ *   ESP32-C3  A dedicated UART (Serial1) talks to the robot while the USB CDC
+ *             port stays free, so the serial monitor keeps working forever.
+ *   ESP8266   Only one usable UART. Serial.swap() moves it off GPIO1/GPIO3 --
+ *             where the boot ROM prints its startup chatter at 74880 baud --
+ *             onto GPIO13/GPIO15. After the swap the USB port is dead, so
+ *             everything this sketch prints before it is your only feedback
+ *             while flashing. Watch the monitor at 115200 baud.
  *
  * Part of https://github.com/chrisse1/neato-FHEM
  */
 
-#include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
-#include <ArduinoOTA.h>
+#if defined(ARDUINO_ARCH_ESP8266)
+  #include <ESP8266WiFi.h>
+  #include <ESP8266mDNS.h>
+  #include <ArduinoOTA.h>
+  #define ROBOT Serial          // UART0, moved to GPIO13/GPIO15 in setup()
+#elif defined(ARDUINO_ARCH_ESP32)
+  #include <WiFi.h>
+  #include <ESPmDNS.h>
+  #include <ArduinoOTA.h>
+  #define ROBOT Serial1         // dedicated UART, USB CDC stays free
+#else
+  #error "neato_bridge targets ESP8266 or ESP32"
+#endif
 
 // ---------------------------------------------------------------- config ---
 
@@ -56,7 +69,17 @@
 #define WIFI_PSK "your-password"
 #endif
 
-static const char *VERSION = "0.2.0";
+// ESP32 only: the pins the robot's debug header is wired to. GPIO4/GPIO5 are
+// free on the C3 Super Mini and, unlike GPIO20/GPIO21, never collide with the
+// board's own console.
+#ifndef ROBOT_RX_PIN
+#define ROBOT_RX_PIN 4
+#endif
+#ifndef ROBOT_TX_PIN
+#define ROBOT_TX_PIN 5
+#endif
+
+static const char *VERSION = "0.3.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -78,13 +101,33 @@ static uint32_t bytesFromRobot = 0;
 static uint32_t lastRobotByte = 0;     // millis() of the last byte the robot sent
 static uint32_t clientCount = 0;
 
+// On the ESP8266 the debug port and the robot port are the same UART, so once
+// the swap has happened nothing may be printed any more -- it would land in the
+// robot's console. On the ESP32 the USB port stays ours for good.
+static bool debugUsable = true;
+
 // --------------------------------------------------------------- helpers ---
+
+static void dbg(const String &line) {
+  if (debugUsable) {
+    Serial.println(line);
+  }
+}
+
+// Accept a pending connection. The spelling changed across core versions.
+static WiFiClient acceptFrom(WiFiServer &server) {
+#if defined(ARDUINO_ARCH_ESP8266) && defined(ARDUINO_ESP8266_MAJOR) && ARDUINO_ESP8266_MAJOR < 3
+  return server.available();  // pre-3.0 core spelling
+#else
+  return server.accept();
+#endif
+}
 
 // Leave the robot in a usable state: in test mode it ignores its buttons and
 // will not clean, so we never let a disconnect strand it there.
 static void leaveTestMode() {
-  Serial.print(F("TestMode Off\n"));
-  Serial.flush();
+  ROBOT.print(F("TestMode Off\n"));
+  ROBOT.flush();
 }
 
 static void dropClient() {
@@ -95,10 +138,38 @@ static void dropClient() {
   client.stop();
 }
 
+static void setupRobotSerial() {
+#if defined(ARDUINO_ARCH_ESP8266)
+  Serial.setRxBufferSize(1024);  // has to be set before the port is opened
+  Serial.begin(ROBOT_BAUD);
+#else
+  Serial.begin(115200);          // USB CDC, stays available
+  Serial1.setRxBufferSize(1024);
+  Serial1.begin(ROBOT_BAUD, SERIAL_8N1, ROBOT_RX_PIN, ROBOT_TX_PIN);
+#endif
+}
+
+// ESP8266 only: hand UART0 over to the robot. Everything printed after this
+// would go down the robot's throat, so debug output ends here.
+static void handOverSerial() {
+#if defined(ARDUINO_ARCH_ESP8266)
+  Serial.println(F("switching UART0 to GPIO13/GPIO15 now; this is the last "
+                   "message on the USB port. Use the status page from here on."));
+  Serial.flush();
+  delay(50);
+  Serial.swap();
+  debugUsable = false;
+#endif
+}
+
 static void setupWifi() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+#if defined(ARDUINO_ARCH_ESP8266)
   WiFi.hostname(HOSTNAME);
+#else
+  WiFi.setHostname(HOSTNAME);
+#endif
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PSK);
 
@@ -106,21 +177,33 @@ static void setupWifi() {
   // if the access point is down, and the SDK reconnects on its own.
   uint32_t deadline = millis() + 20000;
   while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - deadline) < 0) {
-    Serial.print('.');
+    if (debugUsable) {
+      Serial.print('.');
+    }
     delay(200);
     yield();
   }
-  Serial.println();
+  if (debugUsable) {
+    Serial.println();
+  }
 }
 
 // --------------------------------------------------------------- status ----
+
+static void sendPage(WiFiClient &http, const String &body) {
+  http.print(F("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+               "Connection: close\r\nContent-Length: "));
+  http.print(body.length());
+  http.print(F("\r\n\r\n"));
+  http.print(body);
+}
 
 static void sendStatusPage(WiFiClient &http) {
   uint32_t up = millis() / 1000;
   bool connected = client && client.connected();
 
   String body;
-  body.reserve(1200);
+  body.reserve(1400);
   body += F("<!doctype html><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<title>neato_bridge</title>"
@@ -130,9 +213,17 @@ static void sendStatusPage(WiFiClient &http) {
             "td:first-child{color:#666}code{background:#f4f4f4;padding:.1rem .3rem}"
             "</style><h1>neato_bridge ");
   body += VERSION;
-  body += F("</h1><table>");
+  body += F("</h1><table><tr><td>Board</td><td>");
+#if defined(ARDUINO_ARCH_ESP8266)
+  body += F("ESP8266, UART0 on GPIO13/GPIO15");
+#else
+  body += F("ESP32, UART1 on GPIO");
+  body += ROBOT_RX_PIN;
+  body += F("/GPIO");
+  body += ROBOT_TX_PIN;
+#endif
 
-  body += F("<tr><td>WiFi</td><td>");
+  body += F("</td></tr><tr><td>WiFi</td><td>");
   body += WiFi.SSID();
   body += F(" (");
   body += WiFi.RSSI();
@@ -163,11 +254,7 @@ static void sendStatusPage(WiFiClient &http) {
   body += WiFi.localIP().toString();
   body += F(":23</code></p>");
 
-  http.print(F("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-               "Connection: close\r\nContent-Length: "));
-  http.print(body.length());
-  http.print(F("\r\n\r\n"));
-  http.print(body);
+  sendPage(http, body);
 }
 
 // A one-shot wiring test: with nobody else on the console, send GetVersion and
@@ -185,16 +272,16 @@ static void sendTestPage(WiFiClient &http) {
     body += F("A bridge client is connected -- disable the FHEM device first, "
               "otherwise this would inject a command into its session.");
   } else {
-    while (Serial.available()) {
-      Serial.read();
+    while (ROBOT.available()) {
+      ROBOT.read();
     }
-    Serial.print(F("GetVersion\n"));
+    ROBOT.print(F("GetVersion\n"));
 
     uint32_t deadline = millis() + 4000;
     size_t got = 0;
     while ((int32_t)(millis() - deadline) < 0) {
-      while (Serial.available()) {
-        char c = (char)Serial.read();
+      while (ROBOT.available()) {
+        char c = (char)ROBOT.read();
         got++;
         if (c == 0x1a) {          // the console's response terminator
           deadline = millis();    // done
@@ -217,20 +304,11 @@ static void sendTestPage(WiFiClient &http) {
   }
 
   body += F("</pre><p><a href='/'>back</a></p>");
-
-  http.print(F("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-               "Connection: close\r\nContent-Length: "));
-  http.print(body.length());
-  http.print(F("\r\n\r\n"));
-  http.print(body);
+  sendPage(http, body);
 }
 
 static void handleHttp() {
-#if defined(ARDUINO_ESP8266_MAJOR) && ARDUINO_ESP8266_MAJOR >= 3
-  WiFiClient http = httpServer.accept();
-#else
-  WiFiClient http = httpServer.available();
-#endif
+  WiFiClient http = acceptFrom(httpServer);
   if (!http) {
     return;
   }
@@ -263,41 +341,26 @@ static void handleHttp() {
 // ------------------------------------------------------------------ setup --
 
 void setup() {
-  Serial.setRxBufferSize(1024);  // has to be set before the port is opened
-  Serial.begin(ROBOT_BAUD);
+  setupRobotSerial();
 
-  // Everything up to Serial.swap() goes out of the USB port, which is the only
-  // feedback available while flashing.
-  Serial.println();
-  Serial.print(F("\nneato_bridge "));
-  Serial.println(VERSION);
-  Serial.print(F("connecting to "));
-  Serial.println(F(WIFI_SSID));
+  dbg("");
+  dbg(String(F("neato_bridge ")) + VERSION);
+  dbg(String(F("connecting to ")) + WIFI_SSID);
 
   setupWifi();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print(F("connected, IP "));
-    Serial.println(WiFi.localIP());
-    Serial.print(F("status page: http://"));
-    Serial.print(WiFi.localIP());
-    Serial.print(F("/  or http://"));
-    Serial.print(HOSTNAME);
-    Serial.println(F(".local/"));
-    Serial.print(F("FHEM: define Staubsauger NeatoLocal "));
-    Serial.print(WiFi.localIP());
-    Serial.println(F(":23"));
+    dbg(String(F("connected, IP ")) + WiFi.localIP().toString());
+    dbg(String(F("status page: http://")) + WiFi.localIP().toString()
+        + F("/  or http://") + HOSTNAME + F(".local/"));
+    dbg(String(F("FHEM: define Staubsauger NeatoLocal "))
+        + WiFi.localIP().toString() + F(":23"));
   } else {
-    Serial.println(F("WiFi not connected -- check SSID and password. "
-                     "The SDK keeps retrying in the background."));
+    dbg(F("WiFi not connected -- check SSID and password. "
+          "The SDK keeps retrying in the background."));
   }
 
-  Serial.println(F("switching UART0 to GPIO13/GPIO15 now; this is the last "
-                   "message on the USB port. Use the status page from here on."));
-  Serial.flush();
-  delay(50);
-
-  Serial.swap();  // UART0 -> GPIO13 (RX) / GPIO15 (TX)
+  handOverSerial();  // ESP8266 only; the C3 keeps its USB port
 
   MDNS.begin(HOSTNAME);
   MDNS.addService("http", "tcp", HTTP_PORT);
@@ -318,18 +381,16 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+#if defined(ARDUINO_ARCH_ESP8266)
   MDNS.update();
+#endif
   handleHttp();
 
   // Accept a new connection. A single client owns the console; a fresh
   // connection takes over from a stale one rather than being refused, so a
   // restarted FHEM always gets back in.
   if (bridgeServer.hasClient()) {
-#if defined(ARDUINO_ESP8266_MAJOR) && ARDUINO_ESP8266_MAJOR >= 3
-    WiFiClient incoming = bridgeServer.accept();
-#else
-    WiFiClient incoming = bridgeServer.available();  // pre-3.0 core spelling
-#endif
+    WiFiClient incoming = acceptFrom(bridgeServer);
     if (client && client.connected()) {
       dropClient();
     }
@@ -339,8 +400,8 @@ void loop() {
     clientCount++;
 
     // discard console output that arrived while nobody was listening
-    while (Serial.available()) {
-      Serial.read();
+    while (ROBOT.available()) {
+      ROBOT.read();
     }
   }
 
@@ -356,18 +417,18 @@ void loop() {
       buf[n++] = client.read();
     }
     if (n > 0) {
-      Serial.write(buf, n);
+      ROBOT.write(buf, n);
       bytesToRobot += n;
       lastClientActivity = millis();
     }
   }
 
   // robot -> network
-  if (Serial.available()) {
+  if (ROBOT.available()) {
     uint8_t buf[256];
     size_t n = 0;
-    while (Serial.available() && n < sizeof(buf)) {
-      buf[n++] = Serial.read();
+    while (ROBOT.available() && n < sizeof(buf)) {
+      buf[n++] = ROBOT.read();
     }
     if (n > 0) {
       bytesFromRobot += n;

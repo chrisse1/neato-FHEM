@@ -38,8 +38,8 @@ Drei Transportwege, alle vom selben Modul bedient:
 | TCP | `192.168.1.42:23` | ESP-WLAN-Brücke (botvac-wifi) oder `ser2net` |
 | HTTP | `http://neato.local` | [OpenNeato](https://github.com/renjfk/OpenNeato) auf einem ESP32-C3 |
 
-Für die TCP-Variante liegt in [`esp8266/`](esp8266/) eine passende Brücken-Firmware
-(`neato_bridge.ino`), getestet mit dem Layout des NodeMCU LoLin V3 (ESP-12F).
+Für die TCP-Variante liegt in [`firmware/`](firmware/) eine passende Brücken-Firmware
+(`neato_bridge.ino`) – ein Sketch für ESP32-C3 und ESP8266.
 
 **Wichtig:** Über USB verweigert der Roboter die Reinigung mit Fehler
 `220 – Please put my Dirt Bin back in.` bzw. „unplug USB before cleaning“.

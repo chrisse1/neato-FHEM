@@ -77,9 +77,9 @@ Zwei erprobte Optionen, beide funktionieren mit diesem FHEM-Modul:
   Modelle, ESP8266) – Websocket/HTML-Interface. Sendet aus Sicherheitsgründen
   automatisch `TestMode off`, wenn ein Client die Verbindung trennt.
 
-* **[neato_bridge](../esp8266/)** (dieses Repo, ESP8266) – dumme TCP-zu-UART-
-  Brücke, die gesamte Logik bleibt im FHEM-Modul.
-  FHEM: `define Staubsauger NeatoLocal neato.local:23`
+* **[neato_bridge](../firmware/)** (dieses Repo, ESP32-C3 *und* ESP8266) –
+  dumme TCP-zu-UART-Brücke mit Statusseite, die gesamte Logik bleibt im
+  FHEM-Modul. FHEM: `define Staubsauger NeatoLocal neato.local:23`
 
 ## ESP8266 statt ESP32-C3
 
