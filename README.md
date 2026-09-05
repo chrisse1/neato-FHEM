@@ -133,14 +133,37 @@ Mit `--usb` verhält sich der Simulator wie ein Roboter mit angestecktem
 USB-Host und verweigert die Reinigung mit Fehler 220 – damit lässt sich der
 Fehlerpfad testen, ohne ihn provozieren zu müssen.
 
+## Konsole des eigenen Roboters auslesen
+
+`tools/dump_robot.py` fragt den Roboter nach seiner Kommandoliste, holt zu jedem
+genannten Kommando den Hilfetext und dazu die Ausgaben der harmlosen `Get*`-
+Kommandos. Heraus kommt eine Datei, die genau dokumentiert, was *deine* Firmware
+versteht – die Grundlage, um die noch offenen Kommandos zu ergänzen.
+
+```
+python3 tools/dump_robot.py --device /dev/ttyACM0
+python3 tools/dump_robot.py --tcp 192.168.1.42:23     # über die WLAN-Brücke
+```
+
+Das Skript **liest nur**: es sendet ausschließlich `Help` und `Get*`. Kein
+`TestMode`, keine Motorkommandos, keine Einstellungsänderungen. Seriennummern
+werden standardmäßig maskiert, damit sich der Dump gefahrlos weitergeben lässt
+(`--no-redact` schaltet das ab). Es braucht nur ein normales Python 3 –
+die serielle Schnittstelle wird über `termios` aus der Standardbibliothek
+konfiguriert, pyserial ist nicht nötig.
+
+Solange FHEM die Schnittstelle geöffnet hat, ist sie belegt: erst den Dump
+ziehen, dann das Gerät in FHEM definieren.
+
 ## Tests
 
 ```
 perl tools/check_module.pl    # Modul: Laden, Transporterkennung, Parser
 python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
+python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über TCP
 ```
 
-Beide laufen ohne FHEM-Installation und ohne Roboter.
+Alle drei laufen ohne FHEM-Installation und ohne Roboter.
 
 ## Lizenz
 

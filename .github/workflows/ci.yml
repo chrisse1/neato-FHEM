@@ -17,6 +17,9 @@ jobs:
       - name: Check the console simulator
         run: python3 tools/check_sim.py
 
+      - name: Check the console dump tool
+        run: python3 tools/check_dump.py
+
   firmware:
     name: ESP8266 bridge
     runs-on: ubuntu-latest
