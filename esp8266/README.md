@@ -31,7 +31,47 @@ Roboter dieselbe Schiene gegeneinander.
 ESP8266 zieht beim Senden deutlich höhere Spitzen als ein ESP32-C3, und die
 3,3-V-Schiene des Roboters ist nicht dafür ausgelegt worden.
 
-## Bauen und flashen
+## Flashen
+
+**Roboter dabei nicht angeschlossen.**
+
+1. Arduino IDE, Boardverwalter-URL eintragen:
+   `http://arduino.esp8266.com/stable/package_esp8266com_index.json`,
+   dann „esp8266 by ESP8266 Community" installieren.
+2. Board: **NodeMCU 1.0 (ESP-12E Module)**. Flash Size 4MB, Upload Speed 115200
+   (falls der Upload abbricht: runter auf 57600).
+3. Der LoLin V3 hat einen CH340 – unter Linux ist der Treiber dabei, das Board
+   erscheint als `/dev/ttyUSB0`. Deinen Benutzer ggf. in die Gruppe `dialout`.
+4. Oben in `neato_bridge.ino` `WIFI_SSID` und `WIFI_PSK` eintragen.
+5. Hochladen, dann **seriellen Monitor auf 115200 Baud** öffnen und Reset
+   drücken. Dort steht, ob das WLAN klappt und unter welcher IP die Brücke
+   erreichbar ist:
+
+```
+neato_bridge 0.2.0
+connecting to MeinWLAN
+...
+connected, IP 192.168.1.57
+status page: http://192.168.1.57/  or http://neato.local/
+FHEM: define Staubsauger NeatoLocal 192.168.1.57:23
+switching UART0 to GPIO13/GPIO15 now; this is the last message on the USB port.
+```
+
+Ab dieser letzten Zeile ist der serielle Monitor tot – die UART gehört jetzt
+dem Roboter. Alles Weitere läuft über die Statusseite.
+
+## Statusseite
+
+`http://neato.local/` zeigt WLAN, IP, Laufzeit, ob FHEM verbunden ist und die
+Byte-Zähler in beide Richtungen. **„Bytes from robot: 0" heißt: die Verdrahtung
+stimmt nicht** – meist sind TX und RX nicht gekreuzt.
+
+`/test` schickt einmalig `GetVersion` an den Roboter und zeigt die Antwort.
+Das ist der schnellste Weg, die Lötstellen zu prüfen, bevor der Deckel
+wieder zugeht. Es läuft nur, wenn gerade kein FHEM verbunden ist – sonst
+würde es sich in dessen Sitzung drängeln.
+
+## Bauen per Kommandozeile
 
 Arduino IDE mit ESP8266-Core, Board „NodeMCU 1.0 (ESP-12E Module)“.
 SSID und Passwort oben in der `.ino` eintragen, oder beim Kompilieren setzen:
