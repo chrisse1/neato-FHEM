@@ -68,10 +68,17 @@ update add https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_n
 ## Verwendung
 
 ```
-set Staubsauger startCleaning         # Haus reinigen
-set Staubsauger startCleaning spot    # Spot-Reinigung
+set Staubsauger startCleaning              # Haus reinigen
+set Staubsauger startCleaning spot         # Spot-Reinigung
+set Staubsauger startCleaning explore      # Erkundungsfahrt (Karte aufbauen)
+set Staubsauger startCleaning persistent   # Reinigung auf gespeicherter Karte
 set Staubsauger stop
+set Staubsauger pause                      # bzw. resume
+set Staubsauger sendToBase
 set Staubsauger findMe
+set Staubsauger clearError
+set Staubsauger navigationMode Deep
+set Staubsauger syncTime                   # Uhr des Roboters stellen
 set Staubsauger statusRequest
 
 get Staubsauger help                  # Kommandoliste des eigenen Roboters
@@ -81,7 +88,12 @@ get Staubsauger raw GetCharger
 
 Readings: `state` (`cleaning`/`charging`/`docked`/`idle`/`error`/`disconnected`),
 `batteryPercent`, `isCharging`, `isDocked`, `isCleaning`, `vacuumRPM`,
-`error`, `errorCode`, `model`, `serialNumber`, `firmware`.
+`error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `model`,
+`serialNumber`, `firmware`, `ldsSoftware`.
+
+`GetErr` trennt Fehler und Hinweise: ein voller Staubbehälter (Alert 248) ist
+kein Fehler und setzt das Gerät nicht in den Fehlerzustand – ein fehlender
+Behälter (Error 249) schon.
 
 Die Namen folgen bewusst `74_BOTVAC.pm`, damit bestehende `notify`- und
 `DOIF`-Definitionen mit minimalen Anpassungen weiterlaufen.
@@ -92,26 +104,30 @@ Zeitpläne macht FHEM ohnehin besser als die App:
 define di_saugen DOIF ([08:30] and [Anwesenheit] eq "absent") (set Staubsauger startCleaning)
 ```
 
-## Noch zu verifizieren
+## Verifizierter Kommandosatz
 
-Für `startCleaning`, `stop` und `findMe` sind Konsolenkommandos hinterlegt.
-Für `pause`, `resume` und `sendToBase` ist die Syntax der D-Serie **nicht**
-belegt – das Modul erfindet hier nichts, sondern verweist auf das passende
-Attribut. So findest du sie:
+Die Vorgaben stammen aus dem Mitschnitt eines **BotVac D6 Connected,
+Software 4.5.3.189** – der vollständige Dump liegt in
+[`docs/reference-dump-botvac-d6.txt`](docs/reference-dump-botvac-d6.txt),
+die Auswertung in [docs/serial-commands.md](docs/serial-commands.md).
 
-```
-get Staubsauger help Clean
-attr Staubsauger cmdSendToBase <das gefundene Kommando>
-```
+Pause, Fortsetzen und Rückkehr zur Basis gibt es im `Clean`-Kommando nicht;
+der Roboter bietet dafür `SetButton`:
 
-Siehe [docs/serial-commands.md](docs/serial-commands.md) – dort ist aufgeschlüsselt,
-was aus Quellen belegt und was noch offen ist.
+| set-Kommando | Konsolenkommando |
+|---|---|
+| `pause` / `resume` | `SetButton start` (Umschalter) |
+| `sendToBase` | `SetButton IRhome` |
+| `findMe` | `PlaySound SoundID 20` |
+
+Jedes davon lässt sich per Attribut überschreiben, falls deine Firmware
+anders heißt.
 
 ## Was nicht geht
 
-* **Persistente Karten, No-Go-Linien, Zonenreinigung.** Die lagen in der
-  Cloud bzw. der App und sind mit ihr verschwunden. Der Roboter navigiert
-  weiterhin selbst, aber ohne gespeicherte Karte.
+* **No-Go-Linien und Zonenreinigung.** Die wurden in der App verwaltet und
+  sind mit ihr weg. Die *persistente Karte* selbst lebt im Roboter:
+  `Clean Explore` baut sie auf, `Clean Persistent` nutzt sie.
 * **Firmware-Updates.** Gab es nur über die Cloud.
 
 ## Ohne Roboter testen

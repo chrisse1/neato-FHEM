@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 25;
+use Test::More tests => 43;
 
 package main;
 
@@ -87,42 +87,103 @@ is($h->{URL}, "http://neato.local", "trailing slash stripped from URL");
 like($ret, qr/Usage/, "wrong argument count is rejected");
 
 # --- echo stripping and CSV parsing ---------------------------------------
-my $raw = "GetCharger\r\nLabel,Value\r\nFuelPercent,87\r\nChargingActive,0\r\n"
-        . "ExtPwrPresent,1\r\nVBattV,16.32\r\n" . chr(26);
+# Every fixture below is verbatim console output of a BotVac D6 Connected
+# running software 4.5.3.189, captured with tools/dump_robot.py.
+# See docs/reference-dump-botvac-d6.txt.
+my $raw = "GetCharger\r\nLabel,Value\r\nFuelPercent,68\r\nBatteryOverTemp,0\r\n"
+        . "ChargingActive,0\r\nChargingEnabled,1\r\nConfidentOnFuel,0\r\n"
+        . "OnReservedFuel,0\r\nEmptyFuel,0\r\nBatteryFailure,0\r\n"
+        . "ExtPwrPresent,0\r\nThermistorPresent,1\r\nBattTempCAvg,27\r\n"
+        . "VBattV,15.90\r\nVExtV,0.00\r\nCharger_mAH,0\r\nDischarge_mAH,149\r\n"
+        . chr(26);
 my $body = NeatoLocal_StripEcho("GetCharger", $raw);
 unlike($body, qr/GetCharger/, "echoed command is stripped");
 unlike($body, qr/\x1a/, "response terminator is stripped");
 
 my $csv = NeatoLocal_ParseCsv($body);
-is($csv->{FuelPercent}, "87", "CSV value parsed");
-is($csv->{VBattV}, "16.32", "float CSV value parsed");
+is($csv->{FuelPercent}, "68", "CSV value parsed");
+is($csv->{VBattV}, "15.90", "float CSV value parsed");
 
 # --- parsers ---------------------------------------------------------------
 ($h, $ret) = mkdev("nt NeatoLocal /dev/ttyACM0");
 NeatoLocal_ParseCharger($h, { cmd => "GetCharger" }, $body);
-is(ReadingsVal("nt", "batteryPercent", ""), "87", "batteryPercent reading set");
-is(ReadingsVal("nt", "isDocked", ""), 1, "isDocked derived from ExtPwrPresent");
+is(ReadingsVal("nt", "batteryPercent", ""), "68", "batteryPercent reading set");
+is(ReadingsVal("nt", "isDocked", ""), 0, "isDocked derived from ExtPwrPresent");
 is(ReadingsVal("nt", "isCharging", ""), 0, "isCharging derived from ChargingActive");
-is(ReadingsVal("nt", "state", ""), "docked", "state is docked when on the base");
+is(ReadingsVal("nt", "state", ""), "idle", "off the base and not cleaning is idle");
 
-NeatoLocal_ParseErr($h, { cmd => "GetErr" }, "220 - Please put my Dirt Bin back in.");
-is(ReadingsVal("nt", "errorCode", ""), "220", "error code parsed");
+# The D-series answers in sections. An alert must not become an error.
+my $errOut = "Error\r\n249 -  (UI_ERROR_DUST_BIN_MISSING)\r\n"
+           . "Alert\r\n248 -  (UI_ERROR_DUST_BIN_EMPTIED)\r\n"
+           . "USB state \r\n NOT connected\r\n";
+NeatoLocal_ParseErr($h, { cmd => "GetErr" }, $errOut);
+is(ReadingsVal("nt", "errorCode", ""), "249", "error code taken from the Error section");
+is(ReadingsVal("nt", "error", ""), "UI_ERROR_DUST_BIN_MISSING", "error text unwrapped");
+is(ReadingsVal("nt", "alertCode", ""), "248", "alert code taken from the Alert section");
+is(ReadingsVal("nt", "alert", ""), "UI_ERROR_DUST_BIN_EMPTIED", "alert text unwrapped");
+is(ReadingsVal("nt", "usbConnected", ""), 0, "USB state parsed");
 is(ReadingsVal("nt", "state", ""), "error", "state switches to error");
+
+# an alert on its own is not an error
+NeatoLocal_ParseErr($h, { cmd => "GetErr" },
+    "Error\r\nAlert\r\n248 -  (UI_ERROR_DUST_BIN_EMPTIED)\r\n");
+is(ReadingsVal("nt", "errorCode", ""), 0, "alert alone leaves errorCode at 0");
+is(ReadingsVal("nt", "alertCode", ""), "248", "alert alone is still reported");
+isnt(ReadingsVal("nt", "state", ""), "error", "alert alone does not force the error state");
+
+# older firmware prints the bare code line with no section header
+NeatoLocal_ParseErr($h, { cmd => "GetErr" }, "220 - Please put my Dirt Bin back in.");
+is(ReadingsVal("nt", "errorCode", ""), "220", "headerless output still parses as an error");
 
 NeatoLocal_ParseErr($h, { cmd => "GetErr" }, "");
 is(ReadingsVal("nt", "error", ""), "none", "cleared error resets the reading");
 
-NeatoLocal_ParseMotors($h, { cmd => "GetMotors" }, "Brush_RPM,1200\r\nVacuum_RPM,2100\r\n");
+NeatoLocal_ParseMotors($h, { cmd => "GetMotors" },
+    "Parameter,Value\r\nBrush_RPM,1400\r\nBrush_mA,0\r\nVacuum_RPM,2100\r\n"
+  . "Vacuum_mA,0\r\nLeftWheel_RPM,0\r\nROTATION_SPEED,0.00\r\nSideBrush_mA,0\r\n");
 is(ReadingsVal("nt", "isCleaning", ""), 1, "cleaning detected from Vacuum_RPM");
 
-NeatoLocal_ParseVersion($h, { cmd => "GetVersion" },
-    "Component,Major,Minor,Build\r\nModelID,-1,BotvacD7\r\nSerial Number,KSH12345-0000123\r\n"
-  . "MainBoard Software,4,5,3\r\n");
-is(ReadingsVal("nt", "serialNumber", ""), "KSH12345-0000123", "serial number parsed");
+NeatoLocal_ParseMotors($h, { cmd => "GetMotors" },
+    "Parameter,Value\r\nBrush_RPM,0\r\nVacuum_RPM,0\r\nROTATION_SPEED,0.00\r\n");
+is(ReadingsVal("nt", "isCleaning", ""), 0, "idle motors clear the cleaning flag");
 
-# --- unconfigured commands must fail loudly, not silently ------------------
-my $err = NeatoLocal_Set($h, "nt", "sendToBase");
-like($err, qr/cmdSendToBase/, "sendToBase without configured command points at the attribute");
+# GetVersion spreads values over a varying number of columns
+NeatoLocal_ParseVersion($h, { cmd => "GetVersion" },
+    "Component,Major,Minor,Build,Aux\r\nBaseID,0.0,0.0,0,0,\r\n"
+  . "Beehive URL, beehive.neatocloud.com,\r\nBrushSpeed,1400,,\r\n"
+  . "LDS Software,V2.7.4,0000000000,\r\n"
+  . "MainBoard Version,4,,\r\nModel,BotVacD6Connected,905-0496,\r\n"
+  . "Serial Number,GPC26519-0000123,40bd32d1097a,P\r\n"
+  . "Software Git SHA,14f004c\r\nSoftware,4,5,3,189,0\r\n");
+is(ReadingsVal("nt", "model", ""), "BotVacD6Connected", "model taken from the Model row");
+is(ReadingsVal("nt", "serialNumber", ""), "GPC26519-0000123", "serial number parsed");
+is(ReadingsVal("nt", "firmware", ""), "4.5.3.189.0", "version columns joined");
+is(ReadingsVal("nt", "ldsSoftware", ""), "V2.7.4", "lidar software parsed");
+
+# --- verified command mapping ----------------------------------------------
+$attr{"nt"}{disable} = 0;
+my ($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
+is($mapped, "SetButton IRhome", "sendToBase maps to the home button");
+is($err, undef, "sendToBase no longer needs manual configuration");
+
+($mapped, $err) = NeatoLocal_MappedCmd($h, "findMe");
+is($mapped, "PlaySound SoundID 20", "findMe plays the Find Me sound");
+
+# an attribute still wins over the built-in default
+$attr{"nt"}{cmdSendToBase} = "SetButton back";
+($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
+is($mapped, "SetButton back", "attribute overrides the default command");
+delete $attr{"nt"}{cmdSendToBase};
+
+# --- an emptied mapping must fail loudly, not silently ---------------------
+$attr{"nt"}{cmdSendToBase} = "";
+($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
+is($mapped, undef, "an emptied command is not sent");
+like($err, qr/cmdSendToBase/, "an unconfigured command points at its attribute");
+delete $attr{"nt"}{cmdSendToBase};
+
+($mapped, $err) = NeatoLocal_MappedCmd($h, "nonsense");
+like($err, qr/unknown command/, "an unknown mapping is rejected");
 
 # --- test mode must always be left again -----------------------------------
 $h->{helper}{testMode} = 1;

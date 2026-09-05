@@ -1,0 +1,811 @@
+# Neato console dump
+
+source: /dev/ttyACM0
+date: 2026-09-05 10:42:53
+
+
+## Help
+```
+Help - Without any argument, this prints a list of all possible cmds.
+With a command name, it prints the help for that particular command
+Clean - Starts a cleaning by simulating press of start button.
+ClearFiles - Erases Black Box, and other Logs
+DiagTest - Executes different test modes. Once set, press Start button to engage. (Test modes are mutually exclusive.)
+GenerateRobotLinkCode - Generate and send robot linking code to server.
+GetConfiguredWifiNetworks - Get the list of configured wifi networks.
+GetRobotLinkCode - Get the robot linking code
+CancelRobotLink - Cancel link request.
+GetCharger - Get the diagnostic data for the charging system.
+SetNavigationMode - Sets the Navigation Mode
+SetNTPTime - Set system time using the NTP servers (WIFI must be up for this to work)
+GetAccel - Get the Accelerometer readings.
+GetAnalogSensors - Get the A2D readings for the analog sensors.
+GetButtons - Get the state of the UI Buttons.
+GetCalInfo - Prints out the cal info from the System Control Block.
+GetDigitalSensors - Get the state of the digital sensors.
+GetErr - Get Error Message.
+GetLDSScan - Get scan packet from LDS.
+GetMotors - Get the diagnostic data for the motors.
+GetSensor - Gets the sensors status ON/OFF (Wall Follower and Ultra Sound Only)
+GetTime - Get Current Scheduler Time.
+GetVersion - Get the version information for the system software and hardware.
+GetWarranty - Get the warranty data.
+GetWifiInfo - Get a list of available wifi networks.
+GetWifiStatus - Get the current status of the wifi.
+GetUserSettings - Get the user settings.
+GetUsage - Get usage settings
+PlaySound - Play the specified sound in the robot.
+SetBatteryTest - Sets California Energy Commission 10-CFR-430 Battery Charging System Test mode.
+SetButton - Simulates a button press.
+SetFuelGauge - Set Fuel Gauge Level.
+SetIEC - Sets the IEC Cleaning Test parameters
+SetLCD - Sets the LCD to the specified display. (TestMode Only)
+SetLED - Sets the specified LED to on,off,blink, or dim. (TestMode Only)
+SetLDSRotation - Sets LDS rotation on or off. Can only be run in TestMode.
+SetMotor - Sets the specified motor to run in a direction at a requested speed. (TestMode Only)
+SetSystemMode - Set the operation mode of the robot. (TestMode Only)
+SetTime - Sets the current day, hour, and minute for the scheduler clock.
+SetUserSettings - Sets user settings
+SetUsage - Sets usage settings
+SetWifi - SetWifi variables
+TestMode - Sets TestMode on or off. Some commands can only be run in TestMode.
+Upload - Uploads new program to the robot.
+SetBrushControlParams - Sets the open loop control params for the VR300 brush motor.
+```
+
+## Help Clean
+```
+Clean - Starts a cleaning by simulating press of start button.
+    Explore - (Optional) Equivalent to starting an Exploration run from the Smart App.
+		Starts an exploration run.
+
+    House - (Optional) Equivalent to pressing 'Start' button once.
+		Starts a house cleaning.
+		(House cleaning mode is the default cleaning mode.)
+		(Choose only 1 of House,Spot,Stop)
+    Spot - (Optional) Starts a spot clean. (Not available with AutoCycle)
+(Choose only 1 of Explore,House,Spot,Stop)
+    Persistent - (Optional) Equivalent to starting a persistent cleaning from the Smart App.
+
+    Width - (Optional) Spot Width in CM (100-400)(-1=use default).
+    Height - (Optional) Spot Height in CM (100-400)(-1=use default).
+    AutoCycle - (Optional) Number of times the robot should clean or explore.
+		(If -1 is given, the robot will clean forever)
+		(Max number of cycles is 32767
+		(Shutdown will clear. 'Clean Stop' will also clear.)
+		(Not available with Spot clean.)
+    Stop - Stop Cleaning.
+(Choose only 1 of Explore,Persistent,House,Spot,Stop)
+```
+
+## Help ClearFiles
+```
+ClearFiles - Erases Black Box, and other Logs
+    BB - (Optional) Clears Managed Logs in BlackBox Directory.
+
+    All - (Optional) Additionally clears unmanaged files (Crash, ...) in the specified directories.
+```
+
+## Help DiagTest
+```
+DiagTest - Executes different test modes. Once set, press Start button to engage. (Test modes are mutually exclusive.)
+    TestsOff - Stop Diagnostic Test and clear all diagnostic test modes. 
+
+    DrivePath - Enables 'DrivePath' TestMode. Robot travels straight by commanded distance as path.
+(DrivePath|DriveForever|MoveAndBump|Drop)
+
+    DriveForever - Enables 'DriveForever' TestMode.Robot drives continuously.
+(DrivePath|DriveForever|MoveAndBump|Drop)
+
+    MoveAndBump - Enables 'Move and Bump' TestMode. Executes canned series of motions, but will react to bumps
+(DrivePath|DriveForever|MoveAndBump|Drop)
+
+    DropTest - Enables 'Drop' Test. Robot drives forward until a drop is detected.
+(DrivePath|DriveForever|MoveAndBump|Drop)
+
+    AutoCycle - DropTest argument to enable automatic restart of the test. The robot will drive backwards and then forward until a drop is detected until the test is over.
+
+    OneShot - Only executes test once.
+
+    BrushOn - Turns on brush during test. May conflict with motor commands of test so use carefully!
+
+    VacuumOn - Turns on vacuum during test. May conflict with motor commands of test so use carefully!
+
+    LDSOn - Turns on LDS during test. May conflict with motor commands of test so use carefully!
+
+    SideBrushOn - Turns on side brush during test. May conflict with motor commands of test so use carefully!
+
+    AllMotorsOn - Turns on brush, vacuum, and lds during test. May conflict with motor commands of test so use carefully!
+
+    DisablePickupDetect - Ignores pickup (wheel suspension). By default, pickup detect is enabled and stops the test.
+
+    DrivePathDist - Distance in mm
+
+    DriveForeverLeftDist - Use next arg to set left wheel dist for DriveForever test. Requires DriveForeverRightDist as well. The ratio of this value to DriveForeverRightDist determines turn radius.
+
+    DriveForeverRightDist - Use next arg to set right wheel dist for DriveForever test. Requires DriveForeverLeftDist as well. The ratio of this value to DriveForeverLeftDist determines turn radius.
+
+    DriveForeverSpeed - Use next arg to set turn speed of outer wheel for DriveForever test in mm/s.
+
+    Speed - DropTest argument to set the robot speed in mm/s.
+
+    BrushSpeed - DropTest argument to set the speed of the brush in rpm.
+```
+
+## Help GenerateRobotLinkCode
+```
+GenerateRobotLinkCode - Generate and send robot linking code to server.
+    brief - Start the linking process.  This will initiate a link robot command.
+      SerialNumber -> Serial number of this robot
+
+    SerialNumber - The serial number of the robot
+```
+
+## Help GetConfiguredWifiNetworks
+```
+GetConfiguredWifiNetworks - Get the list of configured wifi networks.
+    brief - Returns Wifi Configuration. Data order:
+      SSID
+      signal strength
+```
+
+## Help GetRobotLinkCode
+```
+GetRobotLinkCode - Get the robot linking code
+    brief - Get the robot linking code.
+      Value: <value to enter at server>
+      Expiry Time: <how long it will be valid for in seconds>
+```
+
+## Help CancelRobotLink
+```
+CancelRobotLink - Cancel link request.
+    brief - Cancel the link request.
+
+    SerialNumber - The serial number of the robot
+```
+
+## Help GetCharger
+```
+GetCharger - Get the diagnostic data for the charging system.
+    info - Return Smart Battery BMU Info. 
+
+    data - Return Smart Battery BMU Data.
+```
+
+## Help SetNavigationMode
+```
+SetNavigationMode - Sets the Navigation Mode
+    Normal - Normal Cleaning
+
+    Gentle - Gentle Cleaning
+
+    Deep - Deep Cleaning
+
+    Quick - Quick Cleaning
+```
+
+## Help SetNTPTime
+```
+SetNTPTime - Set system time using the NTP servers (WIFI must be up for this to work)
+    brief - Instruct Astro to get the time from an NTP Server
+```
+
+## Help GetAccel
+```
+GetAccel - Get the Accelerometer readings.
+    brief - Returns a single-line summary. Data order:
+      Revision(0)
+      Pitch
+      Roll
+      X Axis
+      Y Axis
+      Z Axis
+      devIDAccel
+
+    devIDAccel - Get Accel Device ID
+    AccelTest - Get Accel Test
+    GyroTest - Get Gyro Test
+```
+
+## Help GetAnalogSensors
+```
+GetAnalogSensors - Get the A2D readings for the analog sensors.
+    raw - Return raw analog sensor values as milliVolts. 
+(Default is sensor values in native units of what they measure.)
+    stats - Return stats (avg,max,min,dev,cnt) of raw analog sensor values as milliVolts.
+  (Implies 'raw' option)
+    AllData - Return all readings followed by stats (avg,max,min,dev,cnt) of raw analog sensor values as milliVolts.
+  (Implies both 'stats' and 'raw' options)
+    nSamples - Number of samples of data to take for stats. Default (N_STAT_SAMPLES) is 50. Limit is 200.
+```
+
+## Help GetButtons
+```
+GetButtons - Get the state of the UI Buttons.
+    brief - Returns a single-line summary. Data order:
+      Revision(0)
+      Soft key
+      Up
+      Start
+      Back
+      Down
+      Spot
+```
+
+## Help GetCalInfo
+```
+GetCalInfo - Prints out the cal info from the System Control Block.
+```
+
+## Help GetDigitalSensors
+```
+GetDigitalSensors - Get the state of the digital sensors.
+    brief - Returns a single-line summary. Data order:
+      Data Format Revision
+      DC Jack
+      Dustbin
+      Left Wheel
+      Right Wheel
+      Left Side Bumper
+      Left Front Bumper
+      Right Side Bumper
+      Right Front Bumper
+```
+
+## Help GetErr
+```
+GetErr - Get Error Message.
+    Clear - Dismiss the reported error.
+```
+
+## Help GetLDSScan
+```
+GetLDSScan - Get scan packet from LDS.
+```
+
+## Help GetMotors
+```
+GetMotors - Get the diagnostic data for the motors.
+    Brush - Return Brush Motor stats.
+    Vacuum - Return Vacuum Motor stats.
+    LeftWheel - Return LeftWheel Motor stats.
+    RightWheel - Return RightWheel Motor stats.
+    LDS - Return LDS Motor stats.
+    SideBrush - Return Side Brush stats.
+    brief - Returns a single-line WHEEL ONLY summary. Data order:
+      Revision(0)
+      Left Wheel RPM
+      Left Wheel Position MM
+      Left Wheel Speed
+      Right Wheel RPM
+      Right Wheel Position MM
+      Right Wheel Speed
+```
+
+## Help GetSensor
+```
+GetSensor - Gets the sensors status ON/OFF (Wall Follower and Ultra Sound Only)
+    Wall - Reports wall follower sensor status
+    US - Reports ultra sound sensor status
+    Drop - Reports drop sensor status
+    Flight - Reports flight sensors status
+```
+
+## Help GetTime
+```
+GetTime - Get Current Scheduler Time.
+```
+
+## Help GetVersion
+```
+GetVersion - Get the version information for the system software and hardware.
+```
+
+## Help GetWarranty
+```
+GetWarranty - Get the warranty data.
+```
+
+## Help GetWifiInfo
+```
+GetWifiInfo - Get a list of available wifi networks.
+```
+
+## Help GetWifiStatus
+```
+GetWifiStatus - Get the current status of the wifi.
+```
+
+## Help GetUserSettings
+```
+GetUserSettings - Get the user settings.
+    Schedule - Returns Scheduled cleanings
+    Day - Day of the week to get schedule for. Sun=0,Sat=6.
+ If not specified, then all days are given.
+    ButtonClick - Returns status of button click sound (ON/OFF) 
+    EcoMode - Returns status of ECO cleaning Mode(ON/OFF) 
+    IntenseClean - Returns status of Intesne clean option(ON/OFF) 
+    WiFi - Returns status of WiFi (ON/OFF)
+    StealthLED - Returns status of LEDs in standby mode (ON/OFF)
+    Melodies - Returns status of melody sounds(ON/OFF)
+    Warnings - Returns status of warning sounds (ON/OFF)
+    BinFullDetect - Returns status of dust bin full detect option (ON/OFF)
+    FilterChange - Returns time interval in seconds before sending alert to change filter
+    BrushChange - Returns time interval in seconds before sending alert to change brush
+    DirtBin - Returns time interval in minutes before sending alert to change dirt bin
+```
+
+## Help GetUsage
+```
+GetUsage - Get usage settings
+    TotalCleanTime - Returns total amount of time(in sec) spent cleaning so far.
+    TotalCleanArea - Returns total area(in mm) cleaned so far.
+    MainBrushArea - Returns the life of main brush in area.
+    SideBrushArea - Returns the remaining life time of side brush for replacing.
+    DustbinTime - Returns the remaining life time of dustbin untill next emptying.
+    FilterArea - Returns the remaining life time of filter for replacement.
+```
+
+## Help PlaySound
+```
+PlaySound - Play the specified sound in the robot.
+    SoundID - Play the sound library entry specified by the number in the next argument.
+
+    Legal values are:
+
+       0 - Waking Up
+       1 - Starting Cleaning
+       2 - Cleaning Completed
+       3 - Attention Needed
+       4 - Backing up into base station
+       5 - Base Station Docking Completed
+       6 - Test Sound 1
+       7 - Exploring
+       8 - ShutDown
+       9 - Picked Up
+       10 - Going to sleep
+       11 - Returning Home
+       12 - User Canceled Cleaning
+       13 - User Terminated Cleaning
+       14 - Slipped Off Base While Charging
+       15 - Alert
+       16 - Thank You
+       17 - Button Press
+       18 - US speed modifier engaged
+       19 - US bump engaged
+       20 - Find me
+       21 - Easy Connect Success
+
+    Stop - Stop playing sound.
+```
+
+## Help SetBatteryTest
+```
+SetBatteryTest - Sets California Energy Commission 10-CFR-430 Battery Charging System Test mode.
+```
+
+## Help SetButton
+```
+SetButton - Simulates a button press.
+    soft - Simulate pressing the soft button
+    start - Simulate pressing the start button
+    spot - Simulate pressing the spot button
+    back - Simulate pressing the back button
+    up - Simulate pressing the up button
+    down - Simulate pressing the down button
+    IRstart - Simulate pressing the down button
+    IRspot - Simulate pressing the down button
+    IRfront - Simulate pressing the down button
+    IRback - Simulate pressing the down button
+    IRleft - Simulate pressing the down button
+    IRright - Simulate pressing the down button
+    IRhome - Simulate pressing the down button
+    IReco - Simulate pressing the down button
+```
+
+## Help SetFuelGauge
+```
+SetFuelGauge - Set Fuel Gauge Level.
+    Percent - Fuel Gauge percent from -100 to 100
+```
+
+## Help SetIEC
+```
+SetIEC - Sets the IEC Cleaning Test parameters
+    FloorSelection - Next Arg is the floor type < carpet | hard >
+    CarpetSpeed - Next Arg is test speed on carpet (10-300mm/s)
+    HardSpeed - Next Arg is test speed on hard floors (10-300mm/s)
+    Distance - Next Arg is test distance (200-4000 mm, default 1200)
+    Mode - Next Arg is Mode: 1 = ECO 2 = Normal/Turbo
+```
+
+## Help SetLCD
+```
+SetLCD - Sets the LCD to the specified display. (TestMode Only)
+```
+
+## Help SetLED
+```
+SetLED - Sets the specified LED to on,off,blink, or dim. (TestMode Only)
+    home - Set the home led (Neato only).
+    spot - set the spot led (Neato and VR220).
+    info - Set the info led (Neato D3/D5 only).
+    wifi - Set the wifi led(All D's and Vr 220)
+    battery - Set the battery led(Neato only)
+    ls - Set both the light shower leds (Vr220 only)
+    lsu - Set the light shower upper led (Vr220 only)
+    lsd - Set the light shower lower led (Vr220 only)
+    eco - Set the eco led (Vr220 only)
+    doc - Set the docking led (Vr220 only)
+    color - Set color, red, green, blue, yellow,amber, white w/o _dim. Only supported colors will respond.
+    pattern - Set pattern. solid, throb,throb_fast, blink_500, blink_3sec, blink_400,blink_fast, blink_300, blink_5sec
+```
+
+## Help SetLDSRotation
+```
+SetLDSRotation - Sets LDS rotation on or off. Can only be run in TestMode.
+    On - Turns LDS rotation on. Mutually exclusive with Off.
+
+    Off - Turns LDS rotation off. Mutually exclusive with On.
+```
+
+## Help SetMotor
+```
+SetMotor - Sets the specified motor to run in a direction at a requested speed. (TestMode Only)
+    LWheelDist - Distance in millimeters to drive Left wheel.
+		(Pos = forward, neg = backward) (-10000<Dist<10000)
+    RWheelDist - Distance in millimeters to drive Right wheel.
+		(Pos = forward, neg = backward) (-10000<Dist<10000)
+    Speed - Speed in millimeters/second (0<=Speed<=350). (Required only for wheel movements)
+    RPM - Next argument is the RPM of the motor. (0<=RPM<=10000)
+		Not used for wheels, but applied to all other motors specified in the command line.
+    Reverse - Control brush direction, Reverse.
+    Brush - Brush motor forward (Mutually exclusive with wheels and vacuum.)
+    SideBrush - SideBrush motor forward (Mutually exclusive with wheels and vacuum.)
+    VacuumOn - Vacuum motor on (Mutually exclusive with VacuumOff)
+    VacuumOff - Vacuum motor off (Mutually exclusive with VacuumOn)
+    VacuumSpeed - Vacuum speed in percent (1-100).
+    RWheelDisable - Disable Right Wheel motor
+    LWheelDisable - Disable Left Wheel motor
+    BrushDisable - Disable Brush motor
+    RWheelEnable - Enable Right Wheel motor
+    LWheelEnable - Enable Left Wheel motor
+    BrushEnable - Enable Brush motor
+    SideBrushEnable - Enable Side Brush Motor motor
+    SideBrushDisable - Enable Side Brush Motor motor
+    SideBrushOn - Enable the Side Brush
+    SideBrushOff - Disable the Side Brush
+    SideBrushPower - Side Brush maximum power in milliwatts
+    WDTOn - Enable Motor Power Watchdog Toggle. It must be enable for motor power on.
+    WDTOff - Disable Motor Power Watchdog Toggle.
+```
+
+## Help SetSystemMode
+```
+SetSystemMode - Set the operation mode of the robot. (TestMode Only)
+    Shutdown - Shut down the robot. (mutually exclusive of other options)
+    Standby - Start standby operation. (mutually exclusive of other options)
+    PowerCycle - Power cycles the entire system. (mutually exclusive of other options)
+```
+
+## Help SetTime
+```
+SetTime - Sets the current day, hour, and minute for the scheduler clock.
+    Day - Day of week value Sunday=0,Monday=1,... (required)
+    Hour - Hour value 0..23 (required)
+    Min - Minutes value 0..59 (required)
+    Sec - Seconds value 0..59 (Optional, defaults to 0)
+    All - Day/Time in YYYY-MM-DD--hh:mm:ss format (Optional)
+```
+
+## Help SetUserSettings
+```
+SetUserSettings - Sets user settings
+    Schedule - Set scheduled cleanings (Must give a day and time)
+    Day - Day of the week to set schedule for. Sun=0,Sat=6.
+ If not specified, then all days are given.
+    Hour - Hour value 0..23 (required)
+    Min - Minutes value 0..59 (required)
+    House - Schedule to Clean whole house (default)
+(Mutually exclusive with None)
+    None - Remove Scheduled Cleaning for specified day. Time is ignored.
+(Mutually exclusive with House)
+    EcoMode - Set ECO cleaning Mode(ON/OFF) 
+    IntenseClean - Set Intense clean State(ON/OFF) 
+    ButtonClick - Set Button click sound (ON/OFF) 
+    WiFi - Set WiFi (ON/OFF)
+    StealthLED - Set LEDs in standby mode (ON/OFF)
+    Melodies - Set melody sounds(ON/OFF)
+    Warnings - Set warning sounds (ON/OFF)
+    BinFullDetect - Set dust bin full detect option (ON/OFF)
+    FilterChange - Set time interval in seconds before sending alert to change filter
+    BrushChange - Set time interval in seconds before sending alert to change brush
+    DirtBin - Set time interval in minutes before sending alert to change dirt bin
+    ON - Enable  (Mutually exclusive with OFF)
+    OFF - Disable (Mutually exclusive with ON)
+    Reset - Resets all the above user settings to factory and clears all scheduled cleanings
+```
+
+## Help SetUsage
+```
+SetUsage - Sets usage settings
+    MainBrush - Set mainbrush life time.
+    SideBrush - Set sidebrush life time.
+    Dustbin - Set dustbin life time.
+    Filter - Set filter life time.
+```
+
+## Help SetWifi
+```
+SetWifi - SetWifi variables
+```
+
+## Help TestMode
+```
+TestMode - Sets TestMode on or off. Some commands can only be run in TestMode.
+    On - Turns Testmode on. Mutually exclusive with Off.
+
+    Off - Turns Testmode off. Mutually exclusive with On.
+```
+
+## Help Upload
+```
+Upload - Uploads new program to the robot.
+```
+
+## Help SetBrushControlParams
+```
+SetBrushControlParams - Sets the open loop control params for the VR300 brush motor.
+    pwm - Base PWM percent for the open loop control. Usage: SetBrushControlParams [<pwm>] where (0 < pwm <= 100).
+
+    lRPM - Lowest RPM value before triggering brush stuck during open loop. Usage: SetBrushControlParams [<lRPM>] where ( <lRPM<= ).
+
+    lTimeout - Min duration of the open loop control. Usage: SetBrushControlParams [<lTimeout>] where ( <lTimeout<= ).
+
+    uRPM - RPM threshold to transition out from open loop. Usage: SetBrushControlParams [<uRPM>] where ( <uRPM<= ).
+
+    uTimeout - Max time allowed in open loop control. Usage: SetBrushControlParams [<uTimeout>] where ( <uTimeout<= ).
+
+    cRampTime - Time factor to ramp up PWM (centiseconds for 0%->100%) Usage: SetBrushControlParams [<cRampTime>] where ( <cRampTime<= ).
+```
+
+## GetVersion
+```
+Component,Major,Minor,Build,Aux
+BaseID,0.0,0.0,0,0,
+Beehive URL, beehive.neatocloud.com,
+BlowerType,1,BLOWER_ORIG,
+Bootloader Version,90c973a5,,
+BrushMotorResistorPowerRating,500,,
+BrushMotorResistorResistance,100,,
+BrushMotorType,1,BRUSH_MOTOR_ORIG,
+BrushSpeed,1400,,
+BrushSpeedEco,1100,,
+ChassisRev,1,,
+DropSensorType,1,DROP_SENSOR_ORIG,
+LCD Panel,0,0,0,
+LDS CPU,F2802x/c001,,
+LDS Serial,<redacted>,,
+LDS Software,V2.7.4,0000000000,
+LDSMotorType,2,LDS_MOTOR_MABUCHI,
+Locale,1,LOCALE_USA,
+MagSensorType,1,MAG_SENSOR_ORIG,
+MainBoard Serial Number,GPC26519,40bd32d1097a,
+MainBoard Version,4,,
+Model,BotVacD6Connected,905-0496,
+NTP URL, pool.ntp.org,
+Nucleo URL, nucleo.neatocloud.com,
+QAState,QA_STATE_APPROVED
+Serial Number,<redacted>,40bd32d1097a,P
+SideBrushPower,1500,,
+SideBrushType,2,SIDE_BRUSH_PRESENT,
+SmartBatt Authorization,1
+SmartBatt Data Version,512
+SmartBatt Device Chemistry,LION1
+SmartBatt Device Name,F164A10288
+SmartBatt Manufacturer Name,Panasonic
+SmartBatt Mfg Year/Month/Day,2099,2,14
+SmartBatt Serial Number,64780
+SmartBatt Software Version,2048
+Software Git SHA,14f004c
+Software,4,5,3,189,0
+Time Local,Sat Sep  5 10:52:13 2026
+Time UTC,Sat Sep  5 08:52:13 2026
+UI Board Hardware,0,0,
+UI Board Software,0,0,
+UI Name,NONE
+UI Version,NONE
+VacuumPwr,70,,
+VacuumPwrEco,60,,
+WallSensorType,1,WALL_SENSOR_ORIG,
+WheelPodType,1,WHEEL_POD_ORIG,
+```
+
+## GetCharger
+```
+Label,Value
+FuelPercent,68
+BatteryOverTemp,0
+ChargingActive,0
+ChargingEnabled,1
+ConfidentOnFuel,0
+OnReservedFuel,0
+EmptyFuel,0
+BatteryFailure,0
+ExtPwrPresent,0
+ThermistorPresent,1
+BattTempCAvg,27
+VBattV,15.90
+VExtV,0.00
+Charger_mAH,0
+Discharge_mAH,149
+```
+
+## GetErr
+```
+Error
+249 -  (UI_ERROR_DUST_BIN_MISSING)
+Alert
+248 -  (UI_ERROR_DUST_BIN_EMPTIED)
+USB state 
+ NOT connected
+```
+
+## GetMotors
+```
+Parameter,Value
+Brush_RPM,0
+Brush_mA,0
+Vacuum_RPM,0
+Vacuum_mA,0
+LeftWheel_RPM,0
+LeftWheel_Load%,0
+LeftWheel_PositionInMM,0
+LeftWheel_Speed,0
+LeftWheel_direction,0
+RightWheel_RPM,0
+RightWheel_Load%,0
+RightWheel_PositionInMM,0
+RightWheel_Speed,0
+RightWheel_direction,0
+ROTATION_SPEED,0.00
+SideBrush_mA,0
+```
+
+## GetAnalogSensors
+```
+SensorName,Unit,Value
+BatteryVoltage,mV,15909,
+BatteryCurrent,mA,-149,
+BatteryTemperature,mC,27300,
+ExternalVoltage,mV,0,
+AccelerometerX,mG,31,
+AccelerometerY,mG,0,
+AccelerometerZ,mG,945,
+CompassmeterX,mG,0,
+CompassmeterY,mG,0,
+CompassmeterZ,mG,0,
+GyroscopeX,dps,0,
+GyroscopeY,dps,0,
+GyroscopeZ,dps,0,
+IMUAccelerometerX,mG,0,
+IMUAccelerometerY,mG,0,
+IMUAccelerometerZ,mG,0,
+VacuumCurrent,mA,0,
+SideBrushCurrent,mA,0,
+MagSensorLeft,VAL,0,
+MagSensorRight,VAL,0,
+WallSensor,mm,255,
+DropSensorLeft,mm,12,
+DropSensorRight,mm,14,
+```
+
+## GetDigitalSensors
+```
+Digital Sensor Name, Value
+SNSR_DC_JACK_IS_IN,0
+SNSR_DUSTBIN_IS_IN,0
+SNSR_LEFT_WHEEL_EXTENDED,0
+SNSR_RIGHT_WHEEL_EXTENDED,0
+LSIDEBIT,0
+LFRONTBIT,0
+LLDSBIT,0
+RSIDEBIT,0
+RFRONTBIT,0
+RLDSBIT,0
+```
+
+## GetButtons
+```
+Button Name,Pressed
+BTN_SOFT_KEY,0
+BTN_SCROLL_UP,0
+BTN_START,0
+BTN_BACK,0
+BTN_SCROLL_DOWN,0
+BTN_SPOT,0
+IR_BTN_HOME,0
+IR_BTN_SPOT,0
+IR_BTN_ECO,0
+IR_BTN_UP,0
+IR_BTN_DOWN,0
+IR_BTN_RIGHT,0
+IR_BTN_LEFT,0
+IR_BTN_START,0
+IR_BTN_LEFT_ARC,0
+IR_BTN_RIGHT_ARC,0
+```
+
+## GetAccel
+```
+Label,Value
+PitchInDegrees, -2.33
+RollInDegrees, -1.20
+XInG, 0.039
+YInG,-0.020
+ZInG, 0.950
+SumInG, 0.951
+```
+
+## GetCalInfo
+```
+calibration file /emmc/calibration/wheel_sensor_calibration.txt does not exist
+Parameter,Value,DistanceInMM
+LDSOffset,0
+XAccel,0
+YAccel,0
+ZAccel,0
+RTCOffset,0
+CleaningTestSurface,hard
+CleaningTestHardSpeed,100
+CleaningTestCarpetSpeed,100
+CleaningTestHardDistance,1200
+CleaningTestCarpetDistance,1200
+CleaningTestMode,2
+QAState,QA_STATE_APPROVED
+LeftDropSensor_CalibrationData,-3
+RightDropSensor_CalibrationData,-5
+WheelDropSensor_CalibrationData,0
+WallSensor_CalibrationData,-13
+```
+
+## GetTime
+```
+Sunday 0:00:00
+```
+
+## GetUserSettings
+```
+Language, EL_NONE 
+ClickSounds, ON 
+LED, ON 
+Wall Enable, ON 
+Eco Mode, OFF 
+IntenseClean, OFF 
+WiFi, OFF 
+Melody Sounds, ON 
+Warning Sounds, ON 
+Bin Full Detect, ON 
+Filter Change Time (seconds), 43200 
+Brush Change Time (seconds), 259200 
+Dirt Bin Alert Reminder Interval (minutes), 90 
+Current Dirt Bin Runtime is: 0
+Number of Cleanings where Dust Bin was Full is: 0
+Schedule is Disabled
+���' 00:00 -None-
+���' 00:00 -None-
+���' 00:00 -None-
+���' 00:00 -None-
+���' 00:00 -None-
+���' 00:00 -None-
+���' 00:00 -None-
+```
+
+## GetWarranty
+```
+Item,Value
+CumulativeCleaningTimeInSecs,00192364
+CumulativeBatteryCycles,05c2
+ValidationCode,c2cc3e78
+```

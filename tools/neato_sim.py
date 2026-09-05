@@ -33,10 +33,13 @@ class Robot:
         self.lock = threading.Lock()
         self.usb_attached = usb_attached
         self.cleaning = False
+        self.paused = False
         self.docked = True
         self.fuel = 96.0
         self.error = None
+        self.alert = None
         self.test_mode = False
+        self.nav_mode = "Normal"
         self.last = time.monotonic()
 
     def _advance(self):
@@ -63,6 +66,8 @@ class Robot:
                 "docked": self.docked,
                 "charging": self.docked and self.fuel < 100.0,
                 "error": self.error,
+                "alert": self.alert,
+                "paused": self.paused,
                 "test_mode": self.test_mode,
             }
 
@@ -71,12 +76,13 @@ class Robot:
             self._advance()
             if self.usb_attached:
                 # the real robot refuses to clean with a USB host attached
-                self.error = (220, "Please put my Dirt Bin back in.")
+                self.error = (220, "UI_ERROR_USB_CONNECTED")
                 return False
             if self.test_mode:
                 # test mode disables the normal cleaning behaviour
                 return False
             self.cleaning = True
+            self.paused = False
             self.docked = False
             self.error = None
             return True
@@ -85,6 +91,29 @@ class Robot:
         with self.lock:
             self._advance()
             self.cleaning = False
+            self.paused = False
+
+    def press_button(self, button):
+        """Simulate a UI button. Start toggles pause, IRhome sends it home."""
+        with self.lock:
+            self._advance()
+            button = button.lower()
+            if button == "start":
+                if self.cleaning:
+                    self.cleaning = False
+                    self.paused = True
+                elif self.paused:
+                    self.cleaning = True
+                    self.paused = False
+                return True
+            if button in ("irhome", "back"):
+                self.cleaning = False
+                self.paused = False
+                self.docked = True
+                return True
+            return button in ("soft", "spot", "up", "down", "irstart",
+                              "irspot", "irfront", "irback", "irleft",
+                              "irright", "ireco")
 
     def set_test_mode(self, on):
         with self.lock:
@@ -94,48 +123,79 @@ class Robot:
 
 
 HELP_TEXT = """Help - Without any argument, this prints a list of all possible cmds.
+With a command name, it prints the help for that particular command
 Clean - Starts a cleaning by simulating press of start button.
+ClearFiles - Erases Black Box, and other Logs
+DiagTest - Executes different test modes. Once set, press Start button to engage. (Test modes are mutually exclusive.)
+GetCharger - Get the diagnostic data for the charging system.
+SetNavigationMode - Sets the Navigation Mode
 GetAccel - Get the Accelerometer readings.
 GetAnalogSensors - Get the A2D readings for the analog sensors.
 GetButtons - Get the state of the UI Buttons.
 GetCalInfo - Prints out the cal info from the System Control Block.
-GetCharger - Get the diagnostic data for the charging system.
 GetDigitalSensors - Get the state of the digital sensors.
 GetErr - Get Error Message.
 GetLDSScan - Get scan packet from LDS.
-GetLifeStatLog - Get All Life Stat Logs.
 GetMotors - Get the diagnostic data for the motors.
-GetSchedule - Get the Cleaning Schedule.
+GetSensor - Gets the sensors status ON/OFF (Wall Follower and Ultra Sound Only)
 GetTime - Get Current Scheduler Time.
-GetUserSettings - Get user settings.
 GetVersion - Get the version information for the system software and hardware.
-GetWarranty - Get the warranty validation codes.
+GetWarranty - Get the warranty data.
+GetUserSettings - Get the user settings.
+GetUsage - Get usage settings
 PlaySound - Play the specified sound in the robot.
-RestoreDefaults - Restore user settings to default.
+SetButton - Simulates a button press.
+SetFuelGauge - Set Fuel Gauge Level.
 SetTime - Sets the current day, hour, and minute for the scheduler clock.
-TestMode - Sets TestMode on or off."""
+SetUserSettings - Sets user settings
+TestMode - Sets TestMode on or off. Some commands can only be run in TestMode."""
 
 HELP_CLEAN = """Clean - Starts a cleaning by simulating press of start button.
-  House - Start a house cleaning.
-  Spot - Start a spot clean.
-  Stop - Stop cleaning."""
+    Explore - (Optional) Equivalent to starting an Exploration run from the Smart App.
+\t\tStarts an exploration run.
 
-VERSION_TEXT = """Component,Major,Minor,Build,
-ModelID,-1,BotvacD7Connected,,
-ConfigID,1,,,
-Serial Number,KSH12345-0000123,,,
-Software,3,4,,
-BatteryType,1,LIION_4CELL,,
-BlowerType,1,BLOWER_ORIG,,
-BrushSpeed,1200,,,
-LDS Software,V2.6.15295,,,
-LDS Serial,KSH12345,,,
-MainBoard Vendor ID,505,,,
-BootLoader Software,18119,,,
-MainBoard Software,10199,,,
-MainBoard Version,4,0,,
-ChassisRev,2,,,
-UIPanelRev,1,,,"""
+    House - (Optional) Equivalent to pressing 'Start' button once.
+\t\tStarts a house cleaning.
+\t\t(House cleaning mode is the default cleaning mode.)
+\t\t(Choose only 1 of House,Spot,Stop)
+    Spot - (Optional) Starts a spot clean. (Not available with AutoCycle)
+(Choose only 1 of Explore,House,Spot,Stop)
+    Persistent - (Optional) Equivalent to starting a persistent cleaning from the Smart App.
+
+    Stop - Stop Cleaning.
+(Choose only 1 of Explore,Persistent,House,Spot,Stop)"""
+
+HELP_SETBUTTON = """SetButton - Simulates a button press.
+    soft - Simulate pressing the soft button
+    start - Simulate pressing the start button
+    spot - Simulate pressing the spot button
+    back - Simulate pressing the back button
+    IRhome - Simulate pressing the down button
+    IReco - Simulate pressing the down button"""
+
+VERSION_TEXT = """Component,Major,Minor,Build,Aux
+BaseID,0.0,0.0,0,0,
+Beehive URL, beehive.neatocloud.com,
+BlowerType,1,BLOWER_ORIG,
+Bootloader Version,90c973a5,,
+BrushSpeed,1400,,
+ChassisRev,1,,
+LDS CPU,F2802x/c001,,
+LDS Serial,KSH12345,,
+LDS Software,V2.7.4,0000000000,
+Locale,1,LOCALE_USA,
+MainBoard Serial Number,GPC26519,40bd32d1097a,
+MainBoard Version,4,,
+Model,BotVacD6Connected,905-0496,
+NTP URL, pool.ntp.org,
+Nucleo URL, nucleo.neatocloud.com,
+QAState,QA_STATE_APPROVED
+Serial Number,KSH12345-0000123,40bd32d1097a,P
+SideBrushType,2,SIDE_BRUSH_PRESENT,
+Software Git SHA,14f004c
+Software,4,5,3,189,0
+VacuumPwr,70,,
+WheelPodType,1,WHEEL_POD_ORIG,"""
 
 
 def charger_text(state):
@@ -150,21 +210,20 @@ def charger_text(state):
         "EmptyFuel,%d" % (1 if state["fuel"] < 5 else 0),
         "BatteryFailure,0",
         "ExtPwrPresent,%d" % (1 if state["docked"] else 0),
-        "ThermistorPresent[0],1",
-        "ThermistorPresent[1],1",
-        "BatteryTempCAvg[0],25",
-        "BatteryTempCAvg[1],25",
+        "ThermistorPresent,1",
+        "BattTempCAvg,27",
         "VBattV,%.2f" % (14.0 + state["fuel"] * 0.023),
         "VExtV,%.2f" % (20.98 if state["docked"] else 0.0),
         "Charger_mAH,0",
+        "Discharge_mAH,149",
     ])
 
 
 def motors_text(state):
     rpm = 2100 if state["cleaning"] else 0
     return "\n".join([
-        "Label,Value",
-        "Brush_RPM,%d" % (1200 if state["cleaning"] else 0),
+        "Parameter,Value",
+        "Brush_RPM,%d" % (1400 if state["cleaning"] else 0),
         "Brush_mA,%d" % (280 if state["cleaning"] else 0),
         "Vacuum_RPM,%d" % rpm,
         "Vacuum_mA,%d" % (300 if state["cleaning"] else 0),
@@ -176,7 +235,7 @@ def motors_text(state):
         "RightWheel_Load%,0",
         "RightWheel_PositionInMM,0",
         "RightWheel_Speed,0",
-        "Charger_mAH,0",
+        "ROTATION_SPEED,0.00",
         "SideBrush_mA,0",
     ])
 
@@ -192,7 +251,11 @@ def handle_command(robot, line):
 
     if low.startswith("help"):
         arg = cmd[4:].strip().lower()
-        return HELP_CLEAN if arg == "clean" else HELP_TEXT
+        if arg == "clean":
+            return HELP_CLEAN
+        if arg == "setbutton":
+            return HELP_SETBUTTON
+        return HELP_TEXT
 
     if low.startswith("clean"):
         arg = low[5:].strip()
@@ -200,7 +263,7 @@ def handle_command(robot, line):
             if not robot.start_cleaning():
                 return "Cannot start cleaning."
             return ""
-        if arg == "spot":
+        if arg in ("spot", "explore", "persistent"):
             if not robot.start_cleaning():
                 return "Cannot start cleaning."
             return ""
@@ -228,10 +291,20 @@ def handle_command(robot, line):
     if low == "getversion":
         return VERSION_TEXT
 
-    if low == "geterr":
+    if low.startswith("geterr"):
+        if low[6:].strip() == "clear":
+            with robot.lock:
+                robot.error = None
+            return ""
+        lines = ["Error"]
         if state["error"]:
-            return "%d - %s" % state["error"]
-        return ""
+            lines.append("%d -  (%s)" % state["error"])
+        lines.append("Alert")
+        if state["alert"]:
+            lines.append("%d -  (%s)" % state["alert"])
+        lines.append("USB state ")
+        lines.append(" NOT connected")
+        return "\n".join(lines)
 
     if low == "getanalogsensors":
         return "\n".join([
@@ -245,6 +318,39 @@ def handle_command(robot, line):
 
     if low.startswith("playsound"):
         return ""
+
+    if low.startswith("setbutton"):
+        arg = cmd[9:].strip()
+        if not arg:
+            return "SetButton requires a button name"
+        if not robot.press_button(arg):
+            return "Unknown button: %s" % arg
+        return ""
+
+    if low.startswith("setnavigationmode"):
+        arg = cmd[17:].strip().capitalize()
+        if arg not in ("Normal", "Gentle", "Deep", "Quick"):
+            return "Unknown navigation mode"
+        with robot.lock:
+            robot.nav_mode = arg
+        return ""
+
+    if low.startswith("settime"):
+        return ""
+
+    if low == "gettime":
+        return "Sunday 0:00:00"
+
+    if low == "getusage":
+        return "\n".join([
+            "Item,Value",
+            "TotalCleanTime,192364",
+            "TotalCleanArea,1204000",
+            "MainBrushArea,845000",
+            "SideBrushArea,845000",
+            "DustbinTime,90",
+            "FilterArea,845000",
+        ])
 
     return "Unknown Command: %s" % cmd
 

@@ -76,14 +76,20 @@ def main():
 
     version = c.csv("GetVersion")
     check(version.get("Serial Number") == "KSH12345-0000123", "GetVersion carries the serial number")
-    check("MainBoard Software" in version, "GetVersion carries the firmware version")
+    check(version.get("Model") == "BotVacD6Connected", "GetVersion carries the model")
+    check("Software" in version, "GetVersion carries the firmware version")
 
     charger = c.csv("GetCharger")
     check(charger.get("FuelPercent", "").isdigit(), "FuelPercent is numeric")
     check(charger.get("ExtPwrPresent") == "1", "robot starts docked")
 
     check(c.csv("GetMotors").get("Vacuum_RPM") == "0", "vacuum is off while docked")
-    check(c.send("GetErr") == "", "no error while idle")
+
+    # GetErr answers in sections; with nothing wrong only the headers appear
+    err = c.send("GetErr")
+    check("Error" in err and "Alert" in err, "GetErr reports its sections")
+    check(not any(line.strip()[:1].isdigit() for line in err.splitlines()),
+          "no error code while idle")
 
     c.send("Clean House")
     check(c.csv("GetCharger").get("ExtPwrPresent") == "0", "cleaning leaves the base")
@@ -91,6 +97,20 @@ def main():
 
     c.send("Clean Stop")
     check(c.csv("GetMotors").get("Vacuum_RPM") == "0", "vacuum stops on Clean Stop")
+
+    # the button commands the module maps pause/resume/sendToBase onto
+    c.send("Clean House")
+    c.send("SetButton start")
+    check(c.csv("GetMotors").get("Vacuum_RPM") == "0", "SetButton start pauses")
+    c.send("SetButton start")
+    check(c.csv("GetMotors").get("Vacuum_RPM") == "2100", "SetButton start resumes")
+    c.send("SetButton IRhome")
+    check(c.csv("GetCharger").get("ExtPwrPresent") == "1", "SetButton IRhome docks")
+    check(c.send("SetButton nonsense").startswith("Unknown button"),
+          "an unknown button is rejected")
+
+    check(c.send("SetNavigationMode Deep") == "", "SetNavigationMode accepts a mode")
+    check(c.csv("GetUsage").get("TotalCleanTime") == "192364", "GetUsage reports totals")
 
     check("Clean" in c.send("Help"), "Help lists the Clean command")
     check("Spot" in c.send("Help Clean"), "Help Clean documents the subcommands")
@@ -114,8 +134,12 @@ def main():
 
     u = Client(uhost, uport)
     u.send("Clean House")
-    check(u.send("GetErr").startswith("220 - "), "USB mode reproduces error 220")
+    check("220 -" in u.send("GetErr"), "USB mode reproduces error 220")
     check(u.csv("GetMotors").get("Vacuum_RPM") == "0", "USB mode does not start cleaning")
+
+    # GetErr Clear has to dismiss it again
+    u.send("GetErr Clear")
+    check("220 -" not in u.send("GetErr"), "GetErr Clear dismisses the error")
     u.close()
 
     print()

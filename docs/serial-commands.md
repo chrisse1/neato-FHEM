@@ -27,60 +27,84 @@ Deshalb:
 
 ## Belegte Kommandos
 
-Diese sind durch bestehende Open-Source-Implementierungen bzw. das Neato
-Programmer's Manual gedeckt und werden vom Modul verwendet:
+Verifiziert an einem **BotVac D6 Connected, Software 4.5.3.189**. Der
+vollständige Mitschnitt liegt in
+[`reference-dump-botvac-d6.txt`](reference-dump-botvac-d6.txt).
 
 | Kommando | Zweck | Ausgewertete Felder |
 |---|---|---|
 | `GetCharger` | Akku- und Ladestatus | `FuelPercent`, `ChargingActive`, `ExtPwrPresent`, `BatteryOverTemp`, `VBattV` |
-| `GetErr` | aktueller Fehler | Zeile im Format `<code> - <text>`, z. B. `220 - Please put my Dirt Bin back in.` |
+| `GetErr` | Fehler, Alarm, USB-Status | Abschnitte `Error`, `Alert`, `USB state` |
+| `GetErr Clear` | Fehler quittieren | – |
 | `GetMotors` | Motorzustand | `Vacuum_RPM` > 0 ⇒ der Roboter saugt |
-| `GetVersion` | Gerätedaten | `ModelID`, `Serial Number`, `MainBoard Software` |
+| `GetVersion` | Gerätedaten | `Model`, `Serial Number`, `Software`, `LDS Software`, `MainBoard Version` |
 | `GetAnalogSensors` | Analogsensorik | roh (`get sensors`) |
+| `GetUserSettings` | Einstellungen und Zeitplan | roh (`get settings`) |
+| `GetUsage` | Verbrauchszähler | roh (`get usage`) |
 | `Help [cmd]` | Kommandoliste des Roboters | roh |
-| `TestMode On/Off` | Diagnosemodus | – |
-| `Clean House` | Hausreinigung starten | – |
-| `Clean Spot` | Spot-Reinigung starten | – |
-| `Clean Stop` | Reinigung beenden | – |
-| `PlaySound <id>` | Ton abspielen | – |
 
-Weitere dokumentierte Kommandos, die sich über `set raw` / `get raw` nutzen
-lassen: `GetAccel`, `GetButtons`, `GetCalInfo`, `GetDigitalSensors`,
-`GetLDSScan` (Lidar-Rohdaten!), `GetLifeStatLog`, `GetSchedule`, `GetTime`,
-`GetUserSettings`, `GetWarranty`, `NewBattery`, `SetUserSettings Reset`,
-`ClearFiles All`.
+### Clean
 
-## Nicht belegte Kommandos
+```
+Clean [Explore|House|Spot|Stop] [Persistent] [Width n] [Height n] [AutoCycle n]
+```
 
-Für diese Aktionen ist die Syntax auf der D-Serie **nicht verifiziert**. Das
-Modul rät nicht, sondern liefert eine Fehlermeldung mit Verweis auf das
-zugehörige Attribut:
+* `Clean House` – Hausreinigung (Standard)
+* `Clean Spot` – Spot-Reinigung, optional `Width`/`Height` in cm (100–400)
+* `Clean Explore` – Erkundungsfahrt zum Kartenaufbau
+* `Clean Persistent` – Reinigung anhand der gespeicherten Karte
+* `Clean Stop` – Reinigung beenden
 
-| set-Kommando | Attribut | Vorgabe |
+**Pause und Fortsetzen gibt es in `Clean` nicht.** Der Roboter bietet dafür
+nur den simulierten Tastendruck.
+
+### SetButton
+
+```
+SetButton <soft|start|spot|back|up|down|IRstart|IRspot|IRfront|IRback|IRleft|IRright|IRhome|IReco>
+```
+
+Damit sind die drei zuvor offenen Aktionen belegt:
+
+| set-Kommando | Konsolenkommando | Anmerkung |
 |---|---|---|
-| `pause` | `cmdCleanPause` | leer |
-| `resume` | `cmdCleanResume` | leer |
-| `sendToBase` | `cmdSendToBase` | leer |
+| `pause` | `SetButton start` | Start während der Reinigung pausiert |
+| `resume` | `SetButton start` | derselbe Tastendruck setzt fort – ein Umschalter, kein Zustand |
+| `sendToBase` | `SetButton IRhome` | Home-Taste der IR-Fernbedienung; die einzige Entsprechung, die die Firmware anbietet. Falls dein Gerät nicht reagiert: `attr <dev> cmdSendToBase SetButton back` probieren |
 
-Vorgehen:
+### PlaySound
 
-```
-get Staubsauger help Clean
-attr Staubsauger cmdSendToBase <gefundenes Kommando>
-```
+`PlaySound SoundID <n>`, u. a.: 0 Waking Up, 1 Starting Cleaning,
+2 Cleaning Completed, 3 Attention Needed, 11 Returning Home, **20 Find me**,
+21 Easy Connect Success. `PlaySound Stop` bricht ab.
 
-Wenn du die Syntax auf deinem Gerät ermittelt hast: bitte als Issue melden,
-dann wandert sie als Vorgabe ins Modul.
+### Weitere nützliche Kommandos
+
+* `SetNavigationMode Normal|Gentle|Deep|Quick` – Reinigungsmodus
+* `SetTime Day <0-6> Hour <0-23> Min <0-59> [Sec <0-59>]` – Zeitgeber stellen.
+  Ohne Cloud bleibt die Uhr des Roboters sonst stehen; `set <dev> syncTime`
+  überträgt die FHEM-Zeit.
+* `SetUserSettings Schedule Day <n> Hour <h> Min <m> House|None` – Zeitplan
+* `GetSensor Wall|US|Drop|Flight`, `GetLDSScan` (Lidar-Rohdaten),
+  `GetDigitalSensors`, `GetButtons`, `GetAccel`, `GetCalInfo`, `GetWarranty`
+
+### Finger weg
+
+`Upload` (Firmware), `ClearFiles All` (Logs), `SetUserSettings Reset`
+(Werkseinstellungen), `SetSystemMode Shutdown|PowerCycle`, `SetMotor`,
+`DiagTest`, `SetFuelGauge`. Das Modul sendet nichts davon; über `set raw`
+sind sie erreichbar, aber dann auf eigene Verantwortung.
 
 ## Bekannte Stolperfallen
 
-* **Fehler 220 über USB.** Solange ein USB-Host angesteckt ist, startet der
-  Roboter keine Reinigung. Betrifft nur den USB-Transport, nicht den internen
-  Debug-Port.
+* **Fehler 220 über USB.** Ältere Firmware verweigert die Reinigung, solange
+  ein USB-Host angesteckt ist. Betrifft nur den USB-Transport, nicht den
+  internen Debug-Port.
 * **Schlafender Roboter.** Nach längerer Ruhe verwirft die Konsole das erste
-  Kommando. `neato-serial` sendet deshalb erst ein Dummy-Wort („wake-up“).
-  Bei fester Verkabelung über den Debug-Port ist das in der Praxis kein Thema;
-  falls doch, hilft ein `set <device> raw wake-up` vor dem eigentlichen Befehl.
+  Kommando, und der USB-Port ist unter Umständen gar nicht da. Erst wecken.
 * **Zustandserkennung.** Der Roboter meldet keinen expliziten „ich reinige
   gerade“-Status. Das Modul leitet ihn aus `Vacuum_RPM` (`GetMotors`) ab und
   nimmt zwischen Startbefehl und nächster Abfrage optimistisch `cleaning` an.
+* **Alarm ist kein Fehler.** `GetErr` liefert `Error` und `Alert` getrennt.
+  Ein voller Staubbehälter (Alert 248) darf den Roboter nicht in den
+  Fehlerzustand versetzen – das Modul trennt beides.
