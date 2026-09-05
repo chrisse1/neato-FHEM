@@ -55,14 +55,19 @@ höher als beim C3.
 
 ### ESP32-C3
 
+Ausführlich in [docs/flashing-esp32c3.md](../docs/flashing-esp32c3.md), kurz:
+
 1. Boardverwalter-URL
    `https://espressif.github.io/arduino-esp32/package_esp32_index.json`,
    dann „esp32 by Espressif Systems" installieren.
-2. Board: **ESP32C3 Dev Module**. Wichtig: **USB CDC On Boot: Enabled** –
-   sonst bleibt der serielle Monitor stumm.
-3. Der C3 meldet sich per nativem USB, meist als `/dev/ttyACM0`.
-4. Oben in `neato_bridge.ino` `WIFI_SSID` und `WIFI_PSK` eintragen.
-5. Hochladen, seriellen Monitor auf 115200 öffnen.
+2. Board: **Nologo ESP32C3 Super Mini** (hat USB CDC fest an) oder
+   **ESP32C3 Dev Module** mit **USB CDC On Boot: Enabled** – sonst bleibt der
+   serielle Monitor stumm.
+3. Partition Scheme „Default 4MB with spiffs", sonst kein OTA.
+4. Der C3 meldet sich per nativem USB, meist als `/dev/ttyACM0`.
+5. Oben in `neato_bridge.ino` `WIFI_SSID` und `WIFI_PSK` eintragen.
+6. Hochladen, seriellen Monitor auf 115200 öffnen. Startet der Upload nicht:
+   BOOT halten, RESET tippen, BOOT loslassen.
 
 ### ESP8266
 
