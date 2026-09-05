@@ -60,6 +60,26 @@ switching UART0 to GPIO13/GPIO15 now; this is the last message on the USB port.
 Ab dieser letzten Zeile ist der serielle Monitor tot – die UART gehört jetzt
 dem Roboter. Alles Weitere läuft über die Statusseite.
 
+## Verifizierter Build
+
+Die CI übersetzt den Sketch bei jedem Push für `nodemcuv2` mit ESP8266-Core
+**3.1.2**. Belegung des aktuellen Stands:
+
+| Bereich | Belegt | Verfügbar |
+|---|---|---|
+| Code im Flash | 291 KB | 1024 KB |
+| RAM (global/statisch) | 28,9 KB | 80,2 KB |
+| IRAM | 60,8 KB | 64 KB (92 %) |
+
+Der Flash-Verbrauch ist der Grund, bei der Board-Einstellung **4MB (FS:2MB
+OTA:~1019KB)** zu bleiben: 291 KB passen bequem in die OTA-Hälfte, spätere
+Updates über die Luft funktionieren also. Die 92 % IRAM sind für einen ESP8266
+mit WLAN normal, aber der Grund, warum hier keine weiteren Bibliotheken
+dazukommen sollten.
+
+Kompiliert wird gegen Core 3.x; der Zweig für Core 2.x (`server.available()`
+statt `accept()`) ist nur mitgeführt, nicht getestet.
+
 ## Statusseite
 
 `http://neato.local/` zeigt WLAN, IP, Laufzeit, ob FHEM verbunden ist und die
