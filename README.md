@@ -119,10 +119,17 @@ get Staubsauger help Clean            # Syntax des Clean-Kommandos
 get Staubsauger raw GetCharger
 ```
 
-Readings: `state` (`cleaning`/`charging`/`docked`/`idle`/`error`/`disconnected`),
+Readings: `state`
+(`cleaning`/`charging`/`docked`/`idle`/`error`/`unreachable`/`disconnected`),
 `batteryPercent`, `isCharging`, `isDocked`, `isCleaning`, `vacuumRPM`,
 `error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `model`,
 `serialNumber`, `firmware`, `ldsSoftware`.
+
+`unreachable` bedeutet: die Verbindung steht, aber der Roboter antwortet
+nicht – er schläft, oder die Brücke ist noch nicht mit ihm verdrahtet. Die
+Abfrage geht dann schrittweise bis auf das 16-fache Intervall zurück
+(höchstens eine Stunde), statt jede Minute Zeitüberschreitungen ins Log zu
+schreiben. Die erste Antwort setzt alles zurück.
 
 `GetErr` trennt Fehler und Hinweise: ein voller Staubbehälter (Alert 248) ist
 kein Fehler und setzt das Gerät nicht in den Fehlerzustand – ein fehlender

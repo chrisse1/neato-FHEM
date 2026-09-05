@@ -274,7 +274,7 @@ sub NeatoLocal_RestartTimer($;$) {
     return undef if (!defined($hash));
 
     my $name = $hash->{NAME};
-    $interval = AttrVal($name, "interval", 60) if (!defined($interval));
+    $interval = NeatoLocal_PollInterval($hash) if (!defined($interval));
 
     RemoveInternalTimer($hash, "NeatoLocal_Poll");
     return undef if (IsDisabled($name));
@@ -282,6 +282,24 @@ sub NeatoLocal_RestartTimer($;$) {
     InternalTimer(gettimeofday() + $interval, "NeatoLocal_Poll", $hash, 0);
 
     return undef;
+}
+
+# How long until the next poll. A robot that does not answer -- asleep, not
+# wired up yet, or a bridge with nothing behind it -- gets asked less and less
+# often instead of filling the log every interval.
+sub NeatoLocal_PollInterval($) {
+    my ($hash) = @_;
+    my $interval = AttrVal($hash->{NAME}, "interval", 60);
+
+    my $fails = $hash->{helper}{failCount};
+    $fails = 0 if (!defined($fails));
+    return $interval if ($fails < 2);
+
+    my $steps = $fails - 1;
+    $steps = 4 if ($steps > 4);          # 2x, 4x, 8x, 16x, then stop growing
+    my $backoff = $interval * (2 ** $steps);
+
+    return ($backoff > 3600) ? 3600 : $backoff;
 }
 
 sub NeatoLocal_Poll($) {
@@ -387,8 +405,16 @@ sub NeatoLocal_Timeout($) {
     my $entry = delete $hash->{helper}{pending};
     return undef if (!defined($entry));
 
-    Log3 $name, 2, "NeatoLocal ($name) - timeout waiting for response to '" . $entry->{cmd} . "'";
+    $hash->{helper}{failCount} = ($hash->{helper}{failCount} || 0) + 1;
+
+    # Say it loudly once, then stop shouting -- a robot that is asleep or not
+    # wired up yet would otherwise fill the log forever.
+    Log3 $name, ($hash->{helper}{failCount} <= 1) ? 2 : 4,
+        "NeatoLocal ($name) - timeout waiting for response to '"
+        . $entry->{cmd} . "' (" . $hash->{helper}{failCount} . " in a row)";
+
     readingsSingleUpdate($hash, "lastError", "timeout on '" . $entry->{cmd} . "'", 1);
+    NeatoLocal_UpdateState($hash);
     asyncOutput($entry->{cl}, "NeatoLocal: timeout waiting for '" . $entry->{cmd} . "'")
         if ($entry->{cl});
 
@@ -462,6 +488,14 @@ sub NeatoLocal_Dispatch($$;$) {
     Log3 $name, 5, "NeatoLocal ($name) - response to '" . $entry->{cmd} . "': $body";
 
     $hash->{helper}{lastResponse} = $body;
+
+    # the robot is talking to us again
+    if ($hash->{helper}{failCount}) {
+        Log3 $name, 3, "NeatoLocal ($name) - robot responds again after "
+                     . $hash->{helper}{failCount} . " timeouts";
+        $hash->{helper}{failCount} = 0;
+        NeatoLocal_RestartTimer($hash);
+    }
 
     if (ref($entry->{parser}) eq "CODE") {
         eval { $entry->{parser}->($hash, $entry, $body); };
@@ -689,7 +723,11 @@ sub NeatoLocal_UpdateState($) {
     my $assume     = $hash->{helper}{assumeCleaning} ? 1 : 0;
 
     my $state;
-    if ($errorCode) {
+    # Nothing we think we know is worth anything while the robot is silent.
+    if (($hash->{helper}{failCount} || 0) >= 3) {
+        $state = "unreachable";
+    }
+    elsif ($errorCode) {
         $state = "error";
     }
     elsif ($cleaning || $assume) {
@@ -718,6 +756,15 @@ sub NeatoLocal_UpdateState($) {
 sub NeatoLocal_StatusRequest($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
+
+    # A previous set of queries that is still waiting means the robot is slow
+    # or silent. Piling more on top would only grow the queue until it
+    # overflows, so let the old one finish first.
+    if (@{$hash->{helper}{queue}} || defined($hash->{helper}{pending})) {
+        Log3 $name, 4, "NeatoLocal ($name) - previous status request still "
+                     . "pending, skipping this one";
+        return undef;
+    }
 
     NeatoLocal_Enqueue($hash, "GetCharger", \&NeatoLocal_ParseCharger);
     NeatoLocal_Enqueue($hash, "GetErr", \&NeatoLocal_ParseErr)
@@ -1049,7 +1096,11 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocalreadings"></a>
   <b>Readings</b>
   <ul>
-    <li><b>state</b> - cleaning, charging, docked, idle, error or disconnected</li>
+    <li><b>state</b> - cleaning, charging, docked, idle, error, unreachable or
+        disconnected. <i>unreachable</i> means the connection is up but the
+        robot does not answer -- asleep, or a bridge that is not wired to it
+        yet. Polling then backs off up to 16x the interval instead of filling
+        the log.</li>
     <li><b>batteryPercent</b>, <b>batteryState</b>, <b>batteryVoltage</b></li>
     <li><b>isCharging</b>, <b>isDocked</b>, <b>isCleaning</b>, <b>vacuumRPM</b></li>
     <li><b>error</b>, <b>errorCode</b> - a real error, e.g. 249
@@ -1164,7 +1215,11 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocalreadings"></a>
   <b>Readings</b>
   <ul>
-    <li><b>state</b> - cleaning, charging, docked, idle, error oder disconnected</li>
+    <li><b>state</b> - cleaning, charging, docked, idle, error, unreachable
+        oder disconnected. <i>unreachable</i> heisst: die Verbindung steht,
+        aber der Roboter antwortet nicht -- er schlaeft, oder die Bruecke ist
+        noch nicht mit ihm verdrahtet. Die Abfrage geht dann bis auf das
+        16-fache Intervall zurueck, statt das Log zu fluten.</li>
     <li><b>batteryPercent</b>, <b>batteryState</b>, <b>batteryVoltage</b></li>
     <li><b>isCharging</b>, <b>isDocked</b>, <b>isCleaning</b>, <b>vacuumRPM</b></li>
     <li><b>error</b>, <b>errorCode</b> - a real error, e.g. 249

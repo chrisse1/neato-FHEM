@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 43;
+use Test::More tests => 55;
 
 package main;
 
@@ -184,6 +184,54 @@ delete $attr{"nt"}{cmdSendToBase};
 
 ($mapped, $err) = NeatoLocal_MappedCmd($h, "nonsense");
 like($err, qr/unknown command/, "an unknown mapping is rejected");
+
+# --- a silent robot must not flood the log or pile up the queue -------------
+# This is the state of things while the bridge is wired up but the robot is not
+# connected to it yet.
+($h, $ret) = mkdev("nt NeatoLocal 192.168.1.42:23");
+$attr{"nt"}{interval} = 60;
+$h->{helper}{failCount} = 0;
+
+is(NeatoLocal_PollInterval($h), 60, "healthy device polls at the configured interval");
+
+$h->{helper}{failCount} = 1;
+is(NeatoLocal_PollInterval($h), 60, "a single timeout does not slow polling yet");
+
+$h->{helper}{failCount} = 2;
+is(NeatoLocal_PollInterval($h), 120, "repeated timeouts back off");
+$h->{helper}{failCount} = 4;
+is(NeatoLocal_PollInterval($h), 480, "backoff grows with the failure count");
+$h->{helper}{failCount} = 99;
+is(NeatoLocal_PollInterval($h), 960, "backoff stops growing at 16x");
+
+$attr{"nt"}{interval} = 900;
+$h->{helper}{failCount} = 99;
+is(NeatoLocal_PollInterval($h), 3600, "backoff is capped at an hour");
+$attr{"nt"}{interval} = 60;
+
+# a timeout counts, and after three of them the device says so
+$h->{helper}{failCount} = 0;
+$h->{helper}{queue} = [];
+foreach my $i (1 .. 3) {
+    $h->{helper}{pending} = { cmd => "GetCharger" };
+    NeatoLocal_Timeout($h);
+}
+is($h->{helper}{failCount}, 3, "consecutive timeouts are counted");
+is(ReadingsVal("nt", "state", ""), "unreachable", "a silent robot is reported as unreachable");
+
+# a status request must not stack a second set of queries on a stuck one
+$h->{helper}{queue} = [];
+$h->{helper}{pending} = { cmd => "GetCharger" };
+NeatoLocal_StatusRequest($h);
+is(scalar(@{$h->{helper}{queue}}), 0, "no new queries while one is still pending");
+delete $h->{helper}{pending};
+
+# and one answer puts everything back to normal
+NeatoLocal_Dispatch($h, "GetCharger\r\nFuelPercent,68\r\nExtPwrPresent,1\r\n",
+                    { cmd => "GetCharger", parser => \&NeatoLocal_ParseCharger });
+is($h->{helper}{failCount}, 0, "a response clears the failure count");
+is(NeatoLocal_PollInterval($h), 60, "polling returns to the configured interval");
+isnt(ReadingsVal("nt", "state", ""), "unreachable", "state recovers with the robot");
 
 # --- test mode must always be left again -----------------------------------
 $h->{helper}{testMode} = 1;
