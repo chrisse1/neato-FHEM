@@ -48,18 +48,51 @@ Anbindung an den internen Debug-Port. Details in [docs/hardware.md](docs/hardwar
 
 ## Installation
 
-```
-# in der FHEM-Kommandozeile
-"cd /opt/fhem && curl -o FHEM/74_NeatoLocal.pm https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/FHEM/74_NeatoLocal.pm"
-reload 74_NeatoLocal.pm
+Auf der Kommandozeile des FHEM-Rechners:
 
+```sh
+sudo cp 74_NeatoLocal.pm /opt/fhem/FHEM/
+sudo chown fhem:dialout /opt/fhem/FHEM/74_NeatoLocal.pm
+sudo chmod 644 /opt/fhem/FHEM/74_NeatoLocal.pm
+```
+
+Dann in der FHEM-Kommandozeile:
+
+```
+reload 74_NeatoLocal.pm
 define Staubsauger NeatoLocal /dev/ttyACM0@115200
 attr Staubsauger interval 60
+save
 ```
 
-Alternativ die Datei einfach nach `/opt/fhem/FHEM/` kopieren und FHEM neu starten.
+`reload` ist nicht optional: FHEM liest das Verzeichnis `FHEM/` beim Start
+ein. Eine danach hinzugekommene Datei kennt es nicht, und `define` scheitert
+mit *Cannot load module NeatoLocal*. Ein FHEM-Neustart tut es genauso.
+Und ohne `save` ist die Definition nach dem nächsten Neustart wieder weg.
 
-Oder über den FHEM-Updatemechanismus, dann kommen Aktualisierungen mit `update` mit:
+### Rechte am seriellen Port
+
+Der Punkt, an dem es gern klemmt: **die Rechte an der Moduldatei haben nichts
+mit dem Zugriff auf `/dev/ttyACM0` zu tun.** Der Port gehört üblicherweise
+`root:dialout`, also muss der Benutzer, unter dem FHEM läuft, in der Gruppe
+`dialout` sein:
+
+```sh
+id fhem                          # steht dialout dabei?
+sudo usermod -aG dialout fhem    # falls nicht
+sudo systemctl restart fhem      # Gruppenwechsel wirkt erst nach Neustart
+```
+
+Beim Weg über die WLAN-Brücke (`define ... <ip>:23`) entfällt das komplett –
+dort spricht FHEM nur über das Netz.
+
+Außerdem: Es kann immer nur ein Prozess den Port offen haben. Ein noch
+laufendes `dump_robot.py` blockiert FHEM und umgekehrt.
+
+### Über den FHEM-Updatemechanismus
+
+Solange das Repository öffentlich ist, kommen Aktualisierungen so mit `update`
+mit:
 
 ```
 update add https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt
