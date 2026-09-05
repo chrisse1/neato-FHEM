@@ -30,9 +30,21 @@ def check(cond, label):
         FAILED.append(label)
 
 
-def serve_pty(master_fd, robot, stop):
-    """Answer console commands arriving on the master side of a pty."""
+def serve_pty(master_fd, robot, stop, mute=False):
+    """Answer console commands arriving on the master side of a pty.
+
+    With mute=True it stays silent, which is what a sleeping robot or a wrong
+    port looks like from the outside.
+    """
     buf = b""
+    if mute:
+        while not stop.is_set():
+            try:
+                if not os.read(master_fd, 4096):
+                    return
+            except OSError:
+                return
+        return
     os.write(master_fd, b"\r\n" + EOR)
     while not stop.is_set():
         try:
@@ -115,6 +127,38 @@ def main():
     text = open(out_tcp).read() if os.path.exists(out_tcp) else ""
     check("Serial Number,KSH12345-0000123" in text, "--no-redact keeps the serial number")
     check("## Help Clean" not in text, "--no-help-details skips the detail section")
+
+    # --- a silent robot must be reported, not hang ---------------------------
+    master_fd, slave_fd = pty.openpty()
+    device = os.ttyname(slave_fd)
+    stop = threading.Event()
+    thread = threading.Thread(target=serve_pty,
+                              args=(master_fd, neato_sim.Robot(), stop, True),
+                              daemon=True)
+    thread.start()
+
+    out_mute = os.path.join(tmp, "mute.txt")
+    proc = run_dump(["--device", device], out_mute)
+    check(proc.returncode == 1, "a silent robot exits non-zero instead of hanging")
+    check("--diagnose" in proc.stderr, "the failure points at the diagnose mode")
+
+    # --- diagnose mode on the same silent port ------------------------------
+    out_diag = os.path.join(tmp, "diag.txt")
+    proc = run_dump(["--device", device, "--diagnose"], out_diag)
+    stop.set()
+    os.close(slave_fd)
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+
+    check(proc.returncode == 0, "diagnose runs to completion on a silent port")
+    report = proc.stdout
+    check("## Line ending probe" in report, "diagnose probes all line endings")
+    check("## Passive listen" in report, "diagnose listens passively")
+    check("opened by:" in report, "diagnose reports which process holds the port")
+    check("No answer to any line ending." in report, "diagnose states the verdict")
+    check("robot is asleep" in report, "diagnose names the likeliest cause")
 
     print()
     if FAILED:

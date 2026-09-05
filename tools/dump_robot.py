@@ -20,15 +20,21 @@ the termios module from the standard library, so pyserial is not required.
 """
 
 import argparse
+import fcntl
 import os
 import re
 import select
 import socket
+import struct
 import sys
 import termios
 import time
 
 EOR = b"\x1a"  # the console terminates every response with Ctrl-Z
+
+# How a command line is terminated. Which one the console wants depends on the
+# firmware, so "auto" probes all three before giving up.
+EOL_CHOICES = {"lf": "\n", "cr": "\r", "crlf": "\r\n"}
 
 # Commands that only report. Anything that writes, moves or reconfigures is
 # deliberately absent -- this script must not change the robot.
@@ -89,6 +95,31 @@ class SerialTransport(Transport):
                           [iflag, oflag, cflag, lflag, speed, speed, cc])
         termios.tcflush(self.fd, termios.TCIOFLUSH)
 
+        # Many CDC-ACM devices stay mute until the host asserts DTR -- the
+        # firmware treats it as "a terminal is attached". pyserial does this
+        # for you; doing it by hand means doing this too.
+        self.modem_error = None
+        try:
+            fcntl.ioctl(self.fd, termios.TIOCMBIS,
+                        struct.pack("I", termios.TIOCM_DTR | termios.TIOCM_RTS))
+        except OSError as exc:
+            self.modem_error = exc  # ptys and some drivers do not support it
+
+    def modem_status(self):
+        """Return the modem control lines as a dict, or None if unsupported."""
+        try:
+            packed = fcntl.ioctl(self.fd, termios.TIOCMGET, struct.pack("I", 0))
+        except OSError:
+            return None
+        bits = struct.unpack("I", packed)[0]
+        return {
+            "DTR": bool(bits & termios.TIOCM_DTR),
+            "RTS": bool(bits & termios.TIOCM_RTS),
+            "CTS": bool(bits & termios.TIOCM_CTS),
+            "DSR": bool(bits & termios.TIOCM_DSR),
+            "DCD": bool(bits & termios.TIOCM_CAR),
+        }
+
     def write(self, data):
         os.write(self.fd, data)
 
@@ -124,10 +155,10 @@ class TcpTransport(Transport):
 
 
 class Console:
-    def __init__(self, transport, timeout=8.0, verbose=True):
+    def __init__(self, transport, timeout=8.0, eol="\n"):
         self.t = transport
         self.timeout = timeout
-        self.verbose = verbose
+        self.eol = eol
         self.buf = b""
 
     def drain(self, seconds=0.5):
@@ -140,7 +171,7 @@ class Console:
     def send(self, cmd, timeout=None):
         """Send one command, return its output without echo and terminator."""
         timeout = timeout if timeout is not None else self.timeout
-        self.t.write((cmd + "\n").encode("utf-8"))
+        self.t.write((cmd + self.eol).encode("utf-8"))
 
         deadline = time.monotonic() + timeout
         while EOR not in self.buf:
@@ -164,6 +195,46 @@ class Console:
         return text.strip()
 
 
+    def probe_eol(self, candidates=("lf", "cr", "crlf"), timeout=4.0):
+        """Find a line ending the console actually answers to.
+
+        Returns the winning key, or None if the robot stayed silent for all of
+        them -- which points at the wiring, the port or a sleeping robot rather
+        than at the protocol.
+        """
+        for key in candidates:
+            self.eol = EOL_CHOICES[key]
+            self.drain(0.2)
+            self.t.write(("GetVersion" + self.eol).encode("utf-8"))
+
+            deadline = time.monotonic() + timeout
+            got = b""
+            while time.monotonic() < deadline:
+                chunk = self.t.read_ready(0.3)
+                if chunk:
+                    got += chunk
+                    if EOR in got:
+                        break
+            if got.strip():
+                self.buf = b""
+                return key
+
+        self.buf = b""
+        return None
+
+
+def hexdump(data, limit=512):
+    """Readable dump of whatever came back, for the diagnose report."""
+    data = data[:limit]
+    lines = []
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        hexpart = " ".join("%02x" % b for b in chunk)
+        text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append("%04x  %-47s  %s" % (off, hexpart, text))
+    return "\n".join(lines) if lines else "(nothing received)"
+
+
 def discover_commands(help_text):
     """Pull the command names out of the robot's own help output."""
     names = []
@@ -183,6 +254,203 @@ def redact(text):
     return text
 
 
+def port_holders(device):
+    """Which processes have this device open? Answers the 'FHEM has it' case."""
+    holders = []
+    target = os.path.realpath(device)
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return holders
+
+    mypid = str(os.getpid())
+    for pid in pids:
+        if pid == mypid:
+            continue  # our own open fd is not a conflict
+        fddir = "/proc/%s/fd" % pid
+        try:
+            for fd in os.listdir(fddir):
+                try:
+                    if os.path.realpath(os.path.join(fddir, fd)) == target:
+                        try:
+                            with open("/proc/%s/comm" % pid) as fh:
+                                name = fh.read().strip()
+                        except OSError:
+                            name = "?"
+                        holders.append("%s (pid %s)" % (name, pid))
+                        break
+                except OSError:
+                    continue
+        except OSError:
+            continue  # not our process, or it went away
+    return holders
+
+
+def usb_info(device):
+    """Vendor, product and driver of the USB device behind a tty."""
+    name = os.path.basename(device)
+    base = "/sys/class/tty/%s/device" % name
+    if not os.path.exists(base):
+        return {}
+
+    info = {}
+    path = os.path.realpath(base)
+    for _ in range(6):  # walk up to the USB device node
+        for key in ("idVendor", "idProduct", "product", "manufacturer"):
+            f = os.path.join(path, key)
+            if key not in info and os.path.exists(f):
+                try:
+                    with open(f) as fh:
+                        info[key] = fh.read().strip()
+                except OSError:
+                    pass
+        if "idVendor" in info:
+            break
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return info
+
+
+def diagnose(args):
+    """Collect everything needed to tell why the robot stays silent."""
+    out = []
+
+    def say(line=""):
+        print(line)
+        out.append(line)
+
+    say("# Neato serial diagnosis")
+    say()
+    say("date: %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+
+    if args.tcp:
+        say("target: %s (TCP)" % args.tcp)
+    else:
+        device = args.device
+        say("target: %s" % device)
+        say()
+        say("## Device")
+        if not os.path.exists(device):
+            say("MISSING: %s does not exist." % device)
+            candidates = sorted(
+                [os.path.join("/dev", d) for d in os.listdir("/dev")
+                 if d.startswith(("ttyACM", "ttyUSB"))])
+            say("serial devices present: %s"
+                % (", ".join(candidates) if candidates else "none"))
+            say()
+            say("The robot's USB port only enumerates while the robot is awake.")
+            say("Wake it with a button press and check 'dmesg | tail'.")
+            _write_report(args, out)
+            return 1
+
+        st = os.stat(device)
+        say("mode: %o  uid: %d  gid: %d" % (st.st_mode & 0o777, st.st_uid, st.st_gid))
+        say("readable: %s  writable: %s"
+            % (os.access(device, os.R_OK), os.access(device, os.W_OK)))
+        say("current user: uid=%d gid=%d groups=%s"
+            % (os.getuid(), os.getgid(), ",".join(str(g) for g in os.getgroups())))
+
+        holders = port_holders(device)
+        say("opened by: %s" % (", ".join(holders) if holders else
+                               "nobody visible to this user"))
+        if holders:
+            say("NOTE: another process holds the port. FHEM will keep it open "
+                "once the device is defined -- delete or disable it first.")
+
+        info = usb_info(device)
+        if info:
+            say("usb: %s:%s %s %s" % (info.get("idVendor", "?"),
+                                      info.get("idProduct", "?"),
+                                      info.get("manufacturer", ""),
+                                      info.get("product", "")))
+
+    say()
+    say("## Connection")
+    try:
+        if args.tcp:
+            transport = TcpTransport(args.tcp)
+        else:
+            transport = SerialTransport(args.device, args.baud)
+    except Exception as exc:
+        say("FAILED to open: %s: %s" % (type(exc).__name__, exc))
+        _write_report(args, out)
+        return 1
+    say("opened successfully")
+
+    try:
+        if isinstance(transport, SerialTransport):
+            if transport.modem_error:
+                say("DTR/RTS could not be set: %s" % transport.modem_error)
+            else:
+                say("DTR/RTS asserted")
+            status = transport.modem_status()
+            if status:
+                say("modem lines: %s"
+                    % " ".join("%s=%d" % (k, v) for k, v in sorted(status.items())))
+
+        console = Console(transport, timeout=args.timeout)
+
+        say()
+        say("## Passive listen (5s, no command sent)")
+        deadline = time.monotonic() + 5.0
+        passive = b""
+        while time.monotonic() < deadline:
+            chunk = transport.read_ready(0.5)
+            if chunk:
+                passive += chunk
+        say(hexdump(passive))
+
+        say()
+        say("## Line ending probe")
+        results = {}
+        for key in ("lf", "cr", "crlf"):
+            console.eol = EOL_CHOICES[key]
+            console.drain(0.3)
+            transport.write(("GetVersion" + console.eol).encode("utf-8"))
+            deadline = time.monotonic() + 4.0
+            got = b""
+            while time.monotonic() < deadline:
+                chunk = transport.read_ready(0.3)
+                if chunk:
+                    got += chunk
+                    if EOR in got:
+                        break
+            results[key] = got
+            say()
+            say("### %s (%s)" % (key, repr(EOL_CHOICES[key])))
+            say("%d bytes, terminator seen: %s" % (len(got), EOR in got))
+            say(hexdump(got))
+
+        say()
+        say("## Verdict")
+        answered = [k for k, v in results.items() if v.strip()]
+        if answered:
+            say("The console answers with: %s" % ", ".join(answered))
+            say("Re-run the dump with --eol %s" % answered[0])
+        else:
+            say("No answer to any line ending.")
+            say("Most likely, in this order:")
+            say("  1. The robot is asleep. Press a button, take it off the base "
+                "and put it back, then re-run immediately.")
+            say("  2. Wrong port -- try the other ttyACM*/ttyUSB* devices listed above.")
+            say("  3. The port is held by another process (see above).")
+            say("  4. The USB cable is charge-only. Try a known-good data cable.")
+    finally:
+        transport.close()
+
+    _write_report(args, out)
+    return 0
+
+
+def _write_report(args, lines):
+    path = args.output if args.output != "neato-dump.txt" else "neato-diagnose.txt"
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    print("\nwrote %s" % path)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Dump a Neato Botvac's serial console")
     src = ap.add_mutually_exclusive_group(required=True)
@@ -195,7 +463,14 @@ def main():
                     help="keep serial numbers in the dump")
     ap.add_argument("--no-help-details", action="store_true",
                     help="skip the per-command help texts (much faster)")
+    ap.add_argument("--eol", choices=["auto"] + sorted(EOL_CHOICES), default="auto",
+                    help="line ending sent after each command (default: probe)")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="report why the robot stays silent instead of dumping")
     args = ap.parse_args()
+
+    if args.diagnose:
+        return diagnose(args)
 
     if args.device:
         print("opening %s at %d baud" % (args.device, args.baud))
@@ -212,7 +487,25 @@ def main():
     try:
         # a sleeping console swallows the first command it receives
         console.drain()
-        console.send("wake-up", timeout=3.0)
+
+        if args.eol == "auto":
+            print("probing the line ending ...")
+            console.eol = EOL_CHOICES["lf"]
+            console.send("wake-up", timeout=3.0)
+            found = console.probe_eol()
+            if found is None:
+                print("\nThe robot does not answer to any line ending.\n"
+                      "Run the same command with --diagnose to find out why:\n"
+                      "  python3 %s %s --diagnose"
+                      % (os.path.basename(__file__),
+                         "--device " + args.device if args.device else "--tcp " + args.tcp),
+                      file=sys.stderr)
+                return 1
+            print("console answers to %s (%s)" % (found, repr(EOL_CHOICES[found])))
+        else:
+            console.eol = EOL_CHOICES[args.eol]
+            console.send("wake-up", timeout=3.0)
+
         console.drain(0.3)
 
         print("asking for the command list ...")
@@ -266,7 +559,8 @@ def main():
     print("\nwrote %s (%d sections, %d bytes)"
           % (args.output, len(sections), len(text)))
     print("send this file back and the missing commands go into the module.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

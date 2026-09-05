@@ -155,6 +155,27 @@ konfiguriert, pyserial ist nicht nötig.
 Solange FHEM die Schnittstelle geöffnet hat, ist sie belegt: erst den Dump
 ziehen, dann das Gerät in FHEM definieren.
 
+### Wenn der Roboter nicht antwortet
+
+```
+python3 tools/dump_robot.py --device /dev/ttyACM0 --diagnose
+```
+
+Der Diagnosemodus prüft Gerät, Rechte und belegende Prozesse, meldet die
+USB-Kennung, hört fünf Sekunden passiv mit und probiert alle drei Zeilenenden
+durch – mit Hexdump dessen, was tatsächlich ankommt. Das Ergebnis landet in
+`neato-diagnose.txt`.
+
+Die häufigsten Ursachen, in dieser Reihenfolge:
+
+1. **Der Roboter schläft.** Der USB-Port ist dann zwar da, die Konsole aber
+   stumm. Eine Taste drücken, von der Basis nehmen und zurückstellen, dann
+   sofort erneut versuchen.
+2. **Falscher Port.** Der Diagnosemodus listet alle vorhandenen
+   `ttyACM*`/`ttyUSB*` auf.
+3. **Port belegt**, meist von FHEM selbst.
+4. **Ladekabel statt Datenkabel.**
+
 ## Tests
 
 ```
