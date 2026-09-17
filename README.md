@@ -104,10 +104,16 @@ Danach genügt ein `update`, um auf den neuesten Stand zu kommen; `update check`
 zeigt vorher, was sich ändern würde. Entfernen lässt sich die Quelle mit
 `update delete https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt`.
 
-**Das Repository muss dafür öffentlich sein.** FHEM kann sich bei GitHub nicht
-anmelden, und private Repositories antworten auf anonyme Anfragen mit 404 –
-`update` würde also scheitern, ohne dass die Meldung den Grund nennt. Solange
-es privat bleibt, ist der Weg über `cp` oben der richtige.
+Der Weg ist geprüft: Indexdatei und Modul sind anonym abrufbar, die im Index
+vermerkte Größe stimmt mit der ausgelieferten Datei überein, und die
+Testsuite läuft gegen die heruntergeladene Datei durch.
+
+Falls du das Repository forkst und privat hältst: FHEM kann sich bei GitHub
+nicht anmelden, private Repositories antworten anonym mit 404, und `update`
+scheitert dann, ohne den Grund zu nennen. Dort bleibt nur der Weg über `cp`.
+
+FHEM schreibt beim Update direkt nach `/opt/fhem/FHEM/` – der Benutzer, unter
+dem FHEM läuft, braucht dort Schreibrecht.
 
 Die Indexdatei `controls_neatolocal.txt` hält Größe und Zeitstempel jedes
 Moduls; nur wenn die sich ändern, bietet FHEM ein Update an. Sie wird bei jedem
