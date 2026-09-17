@@ -85,11 +85,12 @@ def main():
 
     check(c.csv("GetMotors").get("Vacuum_RPM") == "0", "vacuum is off while docked")
 
-    # GetErr answers in sections; with nothing wrong only the headers appear
+    # GetErr answers in sections. With nothing wrong both slots carry
+    # code 200 / UI_ALERT_INVALID, which the module must not read as a fault.
     err = c.send("GetErr")
     check("Error" in err and "Alert" in err, "GetErr reports its sections")
-    check(not any(line.strip()[:1].isdigit() for line in err.splitlines()),
-          "no error code while idle")
+    check(err.count("UI_ALERT_INVALID") == 2, "empty slots report UI_ALERT_INVALID")
+    check("249" not in err and "248" not in err, "no real fault while idle")
 
     c.send("Clean House")
     check(c.csv("GetCharger").get("ExtPwrPresent") == "0", "cleaning leaves the base")

@@ -105,6 +105,11 @@ sind sie erreichbar, aber dann auf eigene Verantwortung.
 * **Zustandserkennung.** Der Roboter meldet keinen expliziten „ich reinige
   gerade“-Status. Das Modul leitet ihn aus `Vacuum_RPM` (`GetMotors`) ab und
   nimmt zwischen Startbefehl und nächster Abfrage optimistisch `cleaning` an.
+* **Code 200 ist kein Fehler.** Ein gesunder Roboter füllt beide Fächer mit
+  `200 -  (UI_ALERT_INVALID)`. Das heißt „hier steht nichts", nicht „Störung".
+  Ein leeres Fach ist also keine fehlende Zeile, sondern eine Zeile mit
+  diesem Code. Echte Fehler der D-Serie liegen im Bereich 24x, etwa
+  249 `UI_ERROR_DUST_BIN_MISSING`.
 * **Alarm ist kein Fehler.** `GetErr` liefert `Error` und `Alert` getrennt.
   Ein voller Staubbehälter (Alert 248) darf den Roboter nicht in den
   Fehlerzustand versetzen – das Modul trennt beides.

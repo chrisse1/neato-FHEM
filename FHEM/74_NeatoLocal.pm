@@ -25,7 +25,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.1.0";
+my $NeatoLocal_VERSION = "0.2.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -673,6 +673,12 @@ sub NeatoLocal_ParseErr($$$) {
         $text =~ s/^\s+|\s+$//g;
         $text =~ s/^\((.*)\)$/$1/;      # (UI_ERROR_DUST_BIN_MISSING)
         $text = "unknown" if ($text eq "");
+
+        # An empty slot is reported as a code, not as an absent line: a D6 with
+        # nothing wrong answers "200 -  (UI_ALERT_INVALID)" in both sections.
+        # Taking that for a fault would leave the device stuck in state error
+        # while the robot happily cleans.
+        next if ($code == 200 || $text =~ m/INVALID/i);
 
         # keep the first entry of each section
         $found{$section} = [$code, $text] if ($found{$section}[0] == 0);

@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 55;
+use Test::More tests => 62;
 
 package main;
 
@@ -130,6 +130,23 @@ NeatoLocal_ParseErr($h, { cmd => "GetErr" },
 is(ReadingsVal("nt", "errorCode", ""), 0, "alert alone leaves errorCode at 0");
 is(ReadingsVal("nt", "alertCode", ""), "248", "alert alone is still reported");
 isnt(ReadingsVal("nt", "state", ""), "error", "alert alone does not force the error state");
+
+# A healthy D6 fills both sections with code 200 / UI_ALERT_INVALID, which
+# means "nothing here" -- captured from a working robot, not invented.
+NeatoLocal_ParseErr($h, { cmd => "GetErr" },
+    "Error\r\n200 -  (UI_ALERT_INVALID)\r\nAlert\r\n200 -  (UI_ALERT_INVALID)\r\n"
+  . "USB state \r\n NOT connected\r\n");
+is(ReadingsVal("nt", "errorCode", ""), 0, "UI_ALERT_INVALID is not an error");
+is(ReadingsVal("nt", "error", ""), "none", "empty error slot reads as none");
+is(ReadingsVal("nt", "alertCode", ""), 0, "UI_ALERT_INVALID is not an alert either");
+isnt(ReadingsVal("nt", "state", ""), "error", "a healthy robot is not in the error state");
+
+# but a real fault still gets through
+NeatoLocal_ParseErr($h, { cmd => "GetErr" },
+    "Error\r\n249 -  (UI_ERROR_DUST_BIN_MISSING)\r\nAlert\r\n200 -  (UI_ALERT_INVALID)\r\n");
+is(ReadingsVal("nt", "errorCode", ""), "249", "a real error is still reported");
+is(ReadingsVal("nt", "alertCode", ""), 0, "the empty alert slot stays empty");
+is(ReadingsVal("nt", "state", ""), "error", "a real error still sets the state");
 
 # older firmware prints the bare code line with no section header
 NeatoLocal_ParseErr($h, { cmd => "GetErr" }, "220 - Please put my Dirt Bin back in.");

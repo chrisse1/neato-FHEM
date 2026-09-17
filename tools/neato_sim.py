@@ -296,12 +296,13 @@ def handle_command(robot, line):
             with robot.lock:
                 robot.error = None
             return ""
+        # An empty slot is not an absent line: the firmware fills it with
+        # code 200 / UI_ALERT_INVALID.
+        empty = "200 -  (UI_ALERT_INVALID)"
         lines = ["Error"]
-        if state["error"]:
-            lines.append("%d -  (%s)" % state["error"])
+        lines.append("%d -  (%s)" % state["error"] if state["error"] else empty)
         lines.append("Alert")
-        if state["alert"]:
-            lines.append("%d -  (%s)" % state["alert"])
+        lines.append("%d -  (%s)" % state["alert"] if state["alert"] else empty)
         lines.append("USB state ")
         lines.append(" NOT connected")
         return "\n".join(lines)
