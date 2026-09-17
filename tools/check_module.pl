@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 62;
+use Test::More tests => 84;
 
 package main;
 
@@ -177,30 +177,98 @@ is(ReadingsVal("nt", "serialNumber", ""), "GPC26519-0000123", "serial number par
 is(ReadingsVal("nt", "firmware", ""), "4.5.3.189.0", "version columns joined");
 is(ReadingsVal("nt", "ldsSoftware", ""), "V2.7.4", "lidar software parsed");
 
-# --- verified command mapping ----------------------------------------------
+# --- the event key -----------------------------------------------------------
+# These three values were produced by OpenNeato's C++ computeSKey and this Perl
+# reimplementation must keep matching them exactly -- the robot rejects the
+# event otherwise.
+is(NeatoLocal_ComputeSKey("GPC33719,40bd32d1097a,P"), "b60fcdadd92e3d1418da0608a",
+   "SKey matches the reference implementation (real robot's MAC)");
+is(NeatoLocal_ComputeSKey("KSH12345,aabbccddeeff,P"), "e35ecdab897f3d414d86570fa",
+   "SKey matches the reference implementation (second vector)");
+is(NeatoLocal_ComputeSKey("X,000000000000,X"), "b20f9ff9da2c691518d30159f",
+   "SKey matches the reference implementation (third vector)");
+is(length(NeatoLocal_ComputeSKey("X,000000000000,X")), 25, "SKey is 25 characters");
+
+is(NeatoLocal_ComputeSKey("GPC33719"), "", "a serial without a MAC yields no key");
+is(NeatoLocal_ComputeSKey("GPC33719,tooshort,P"), "", "a short MAC yields no key");
+is(NeatoLocal_ComputeSKey(undef), "", "an undefined serial yields no key");
+
+# GetVersion has to keep the MAC, not just the serial
+is($h->{helper}{skey}, "b60fcdadd92e3d1418da0608a",
+   "the key is derived while parsing GetVersion");
+is(ReadingsVal("nt", "commandApi", ""), "setEvent", "the event API is reported as available");
+
+# --- command mapping ---------------------------------------------------------
 $attr{"nt"}{disable} = 0;
 my ($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
-is($mapped, "SetButton IRhome", "sendToBase maps to the home button");
-is($err, undef, "sendToBase no longer needs manual configuration");
+is($mapped, "SetEvent event UIMGR_EVENT_SMARTAPP_SEND_TO_BASE SKey b60fcdadd92e3d1418da0608a",
+   "sendToBase uses the event API");
+is($err, undef, "sendToBase needs no manual configuration");
+
+($mapped, $err) = NeatoLocal_MappedCmd($h, "pause");
+like($mapped, qr/^SetEvent event UIMGR_EVENT_SMARTAPP_PAUSE_CLEANING SKey /,
+     "pause prefers the event over the simulated button");
+
+# explore has no event, so it stays on the documented command
+($mapped, $err) = NeatoLocal_MappedCmd($h, "explore");
+is($mapped, "Clean Explore", "commands without an event use the documented one");
 
 ($mapped, $err) = NeatoLocal_MappedCmd($h, "findMe");
 is($mapped, "PlaySound SoundID 20", "findMe plays the Find Me sound");
 
-# an attribute still wins over the built-in default
+# turning the event API off falls back to what the Help output documents
+$attr{"nt"}{useSetEvent} = 0;
+($mapped, $err) = NeatoLocal_MappedCmd($h, "pause");
+is($mapped, "SetButton start", "useSetEvent 0 falls back to the button press");
+($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
+is($mapped, undef, "without the event API there is no way to send the robot home");
+like($err, qr/event API/, "and the reason says so");
+delete $attr{"nt"}{useSetEvent};
+
+# an attribute always wins
 $attr{"nt"}{cmdSendToBase} = "SetButton back";
 ($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
-is($mapped, "SetButton back", "attribute overrides the default command");
+is($mapped, "SetButton back", "an attribute overrides even the event API");
 delete $attr{"nt"}{cmdSendToBase};
 
-# --- an emptied mapping must fail loudly, not silently ---------------------
-$attr{"nt"}{cmdSendToBase} = "";
-($mapped, $err) = NeatoLocal_MappedCmd($h, "sendToBase");
-is($mapped, undef, "an emptied command is not sent");
-like($err, qr/cmdSendToBase/, "an unconfigured command points at its attribute");
-delete $attr{"nt"}{cmdSendToBase};
+# a robot that never gave us a MAC
+my $savedKey = $h->{helper}{skey};
+$h->{helper}{skey} = "";
+($mapped, $err) = NeatoLocal_MappedCmd($h, "stop");
+is($mapped, "Clean Stop", "older firmware still gets the documented command");
+$h->{helper}{skey} = $savedKey;
 
 ($mapped, $err) = NeatoLocal_MappedCmd($h, "nonsense");
 like($err, qr/unknown command/, "an unknown mapping is rejected");
+
+# --- the robot's own state beats guessing from the motor ---------------------
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_STANDBY\r\nCurrent Robot State is: ST_C_Standby\r\n");
+is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_STANDBY", "UI state parsed");
+is(ReadingsVal("nt", "robotState", ""), "ST_C_Standby", "robot state parsed");
+is(NeatoLocal_StateIsIdle($h), 1, "standby counts as idle");
+
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_CLEANINGPAUSED\r\nCurrent Robot State is: ST_C_Paused\r\n");
+is(ReadingsVal("nt", "state", ""), "paused", "a paused cleaning is reported as paused");
+
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_STARTHOUSECLEANING\r\nCurrent Robot State is: ST_C_Cleaning\r\n");
+is(ReadingsVal("nt", "state", ""), "cleaning", "an active cleaning is reported as cleaning");
+
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_DOCKING\r\nCurrent Robot State is: ST_C_GoingHome\r\n");
+is(ReadingsVal("nt", "state", ""), "docking", "the way home is reported as docking");
+
+# the UI state can lag behind; the robot state decides
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_STARTHOUSECLEANING\r\nCurrent Robot State is: ST_C_Standby\r\n");
+is(NeatoLocal_StateIsIdle($h), 1, "a stale UI state does not keep it cleaning");
+isnt(ReadingsVal("nt", "state", ""), "cleaning", "and the state follows the robot, not the UI");
+
+NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
+is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_STARTHOUSECLEANING",
+   "an unparseable answer leaves the last state alone");
 
 # --- a silent robot must not flood the log or pile up the queue -------------
 # This is the state of things while the bridge is wired up but the robot is not

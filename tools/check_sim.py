@@ -75,7 +75,7 @@ def main():
     check("GetVersion" not in raw, "response starts after the echoed command")
 
     version = c.csv("GetVersion")
-    check(version.get("Serial Number") == "KSH12345-0000123", "GetVersion carries the serial number")
+    check(version.get("Serial Number") == "KSH12345", "GetVersion carries the serial number")
     check(version.get("Model") == "BotVacD6Connected", "GetVersion carries the model")
     check("Software" in version, "GetVersion carries the firmware version")
 
@@ -142,6 +142,35 @@ def main():
     u.send("GetErr Clear")
     check("220 -" not in u.send("GetErr"), "GetErr Clear dismisses the error")
     u.close()
+
+    # --- the undocumented event API ------------------------------------------
+    c = Client(host, port)
+    key = neato_sim.compute_skey(neato_sim.SIM_SERIAL)
+    check(len(key) == 25, "the simulated robot derives a 25 character key")
+
+    check(c.send("SetEvent event UIMGR_EVENT_SMARTAPP_SEND_TO_BASE SKey wrongkey")
+          == "Invalid SKey", "a wrong key is refused")
+
+    c.send("Clean House")
+    check(c.csv("GetCharger").get("ExtPwrPresent") == "0", "cleaning left the base")
+    check(c.send("SetEvent event UIMGR_EVENT_SMARTAPP_SEND_TO_BASE SKey " + key) == "",
+          "the send-to-base event is accepted")
+    check(c.csv("GetCharger").get("ExtPwrPresent") == "1", "and the robot goes home")
+
+    # GetState has to follow along
+    st = c.send("GetState")
+    check("Current UI State is:" in st and "Current Robot State is:" in st,
+          "GetState reports both states")
+    check("ST_M2_Charging_StdBy" in st or "ST_C_Standby" in st,
+          "a docked robot reports an idle robot state")
+
+    c.send("SetEvent event UIMGR_EVENT_SMARTAPP_START_HOUSE_CLEANING SKey " + key)
+    check("ST_C_Cleaning" in c.send("GetState"), "the cleaning event starts a run")
+    check(c.send("SetEvent event UIMGR_EVENT_SMARTAPP_PAUSE_CLEANING SKey " + key) == "",
+          "the pause event is accepted")
+    check("CLEANINGPAUSED" in c.send("GetState"), "and the robot reports it as paused")
+    c.send("SetEvent event UIMGR_EVENT_SMARTAPP_STOP_CLEANING SKey " + key)
+    c.close()
 
     print()
     if FAILED:

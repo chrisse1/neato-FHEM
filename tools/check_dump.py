@@ -125,7 +125,7 @@ def main():
     check(proc.returncode == 0, "dump over TCP exits cleanly")
 
     text = open(out_tcp).read() if os.path.exists(out_tcp) else ""
-    check("Serial Number,KSH12345-0000123" in text, "--no-redact keeps the serial number")
+    check("Serial Number,KSH12345" in text, "--no-redact keeps the serial number")
     check("## Help Clean" not in text, "--no-help-details skips the detail section")
 
     # --- a silent robot must be reported, not hang ---------------------------

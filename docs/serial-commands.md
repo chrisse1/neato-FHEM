@@ -88,7 +88,70 @@ Damit sind die drei zuvor offenen Aktionen belegt:
 * `GetSensor Wall|US|Drop|Flight`, `GetLDSScan` (Lidar-Rohdaten),
   `GetDigitalSensors`, `GetButtons`, `GetAccel`, `GetCalInfo`, `GetWarranty`
 
-### Finger weg
+## Undokumentierte Kommandos
+
+`Help` listet sie **nicht** – sie stecken aber in der Firmware der D-Serie und
+sind der Schlüssel zu allem, was über Start und Stop hinausgeht. Gefunden und
+entschlüsselt hat sie das Projekt
+[OpenNeato](https://github.com/renjfk/OpenNeato) (MIT, © 2026 Soner Köksal);
+dieses Modul setzt sie eigenständig in Perl um, gegen deren C++-Original auf
+bekannten Werten geprüft.
+
+### SetEvent – die Schnittstelle, über die früher die Cloud sprach
+
+```
+SetEvent event <EVENT> SKey <schlüssel>
+```
+
+| Event | Wirkung |
+|---|---|
+| `UIMGR_EVENT_SMARTAPP_START_HOUSE_CLEANING` | Hausreinigung |
+| `UIMGR_EVENT_SMARTAPP_START_SPOT_CLEANING` | Spot-Reinigung |
+| `UIMGR_EVENT_SMARTAPP_PAUSE_CLEANING` | pausieren |
+| `UIMGR_EVENT_SMARTAPP_RESUME_CLEANING` | fortsetzen |
+| `UIMGR_EVENT_SMARTAPP_STOP_CLEANING` | beenden |
+| `UIMGR_EVENT_SMARTAPP_SEND_TO_BASE` | **zurück zur Basis** |
+
+Das ist der einzige Weg zur Basis. Weder `SetButton IRhome` noch
+`SetButton back` tun auf einem D6 irgendetwas. Zudem fährt `SetEvent` die
+Zustandsmaschine des Roboters korrekt und erhält Karte und Selbstlokalisierung
+über eine Pause hinweg – anders als der simulierte Tastendruck.
+
+### Der Schlüssel
+
+Der `SKey` wird aus der MAC-Adresse berechnet, die `GetVersion` in der Zeile
+`Serial Number` als **zweite** Wertespalte mitliefert:
+
+```
+Serial Number,GPC33719,40bd32d1097a,P
+                       ^^^^^^^^^^^^
+```
+
+RC4 mit festem Seed
+`68 36 43 58 09 09 3A 3C 2A 7B 59`, 12 Byte Schlüsselstrom, XOR über die
+Zeichen der MAC, hex-kodiert – plus ein 25. Zeichen, das das siebte wiederholt.
+Implementierung: `NeatoLocal_ComputeSKey` in `FHEM/74_NeatoLocal.pm`, Testvektoren
+in `tools/check_module.pl`.
+
+### GetState – der Zustand, den der Roboter selbst kennt
+
+```
+Current UI State is: UIMGR_STATE_STANDBY
+Current Robot State is: ST_C_Standby
+```
+
+Damit entfällt das Raten über `Vacuum_RPM`. Ab Firmware 4.5.3 ist
+`robotState` maßgeblich: `uiState` kann auf `UIMGR_STATE_STARTHOUSECLEANING`
+hängenbleiben, während der Roboter längst wieder in `ST_C_Standby` steht.
+Als Leerlauf gelten `ST_C_Standby`, `ST_C_Idle` und `ST_M2_Charging_StdBy`;
+`CLEANINGPAUSED` im `uiState` heißt pausiert, `DOCKING` heißt auf dem Heimweg.
+
+### Weitere
+
+* `GetRobotPos Raw` / `GetRobotPos Smooth` – Position des Roboters
+* `SetUIError clearall` – alle Meldungen quittieren
+
+## Finger weg
 
 `Upload` (Firmware), `ClearFiles All` (Logs), `SetUserSettings Reset`
 (Werkseinstellungen), `SetSystemMode Shutdown|PowerCycle`, `SetMotor`,

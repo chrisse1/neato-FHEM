@@ -19,6 +19,7 @@ is stopped.
 """
 
 import argparse
+import re
 import socketserver
 import threading
 import time
@@ -190,12 +191,43 @@ Model,BotVacD6Connected,905-0496,
 NTP URL, pool.ntp.org,
 Nucleo URL, nucleo.neatocloud.com,
 QAState,QA_STATE_APPROVED
-Serial Number,KSH12345-0000123,40bd32d1097a,P
+Serial Number,KSH12345,aabbccddeeff,P
 SideBrushType,2,SIDE_BRUSH_PRESENT,
 Software Git SHA,14f004c
 Software,4,5,3,189,0
 VacuumPwr,70,,
 WheelPodType,1,WHEEL_POD_ORIG,"""
+
+
+SIM_SERIAL = "KSH12345,aabbccddeeff,P"
+
+
+def compute_skey(serial):
+    """The event API's key, as the firmware derives it from the MAC."""
+    comma = serial.find(",")
+    if comma < 0:
+        return ""
+    mac = serial[comma + 1:comma + 13]
+    if len(mac) != 12:
+        return ""
+
+    seed = [0x68, 0x36, 0x43, 0x58, 0x09, 0x09, 0x3A, 0x3C, 0x2A, 0x7B, 0x59]
+    s = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + s[i] + seed[i % 11]) & 0xFF
+        s[i], s[j] = s[j], s[i]
+
+    ks = []
+    i = j = 0
+    for _ in range(12):
+        i = (i + 1) & 0xFF
+        j = (j + s[i]) & 0xFF
+        s[i], s[j] = s[j], s[i]
+        ks.append(s[(s[i] + s[j]) & 0xFF])
+
+    key = "".join("%02x" % (k ^ ord(c)) for k, c in zip(ks, mac))
+    return key + key[6]
 
 
 def charger_text(state):
@@ -341,6 +373,42 @@ def handle_command(robot, line):
 
     if low == "gettime":
         return "Sunday 0:00:00"
+
+    if low == "getstate":
+        if state["paused"]:
+            ui, rs = "UIMGR_STATE_CLEANINGPAUSED", "ST_C_Paused"
+        elif state["cleaning"]:
+            ui, rs = "UIMGR_STATE_STARTHOUSECLEANING", "ST_C_Cleaning"
+        elif state["docked"]:
+            ui, rs = "UIMGR_STATE_STANDBY", "ST_M2_Charging_StdBy"
+        else:
+            ui, rs = "UIMGR_STATE_STANDBY", "ST_C_Standby"
+        return "Current UI State is: %s\nCurrent Robot State is: %s" % (ui, rs)
+
+    if low.startswith("setevent"):
+        # "SetEvent event <NAME> SKey <key>" -- a wrong key is refused, which is
+        # what makes this worth simulating at all.
+        m = re.match(r"setevent\s+event\s+(\S+)\s+skey\s+(\S+)\s*$", low)
+        if not m:
+            return "Usage: SetEvent event <event> SKey <key>"
+        event, key = m.group(1).upper(), m.group(2)
+        if key != compute_skey(SIM_SERIAL).lower():
+            return "Invalid SKey"
+        if event.endswith("START_HOUSE_CLEANING") or event.endswith("START_SPOT_CLEANING"):
+            return "" if robot.start_cleaning() else "Cannot start cleaning."
+        if event.endswith("PAUSE_CLEANING"):
+            robot.press_button("start")
+            return ""
+        if event.endswith("RESUME_CLEANING"):
+            robot.press_button("start")
+            return ""
+        if event.endswith("STOP_CLEANING"):
+            robot.stop_cleaning()
+            return ""
+        if event.endswith("SEND_TO_BASE"):
+            robot.press_button("irhome")
+            return ""
+        return "Unknown event: %s" % event
 
     if low == "getusage":
         return "\n".join([

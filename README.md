@@ -122,8 +122,12 @@ get Staubsauger raw GetCharger
 Readings: `state`
 (`cleaning`/`charging`/`docked`/`idle`/`error`/`unreachable`/`disconnected`),
 `batteryPercent`, `isCharging`, `isDocked`, `isCleaning`, `vacuumRPM`,
-`error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `model`,
-`serialNumber`, `firmware`, `ldsSoftware`.
+`error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `uiState`,
+`robotState`, `commandApi`, `model`, `serialNumber`, `firmware`, `ldsSoftware`.
+
+`state` kennt zusätzlich `paused` und `docking`, weil `GetState` – ebenfalls
+undokumentiert – den Zustand liefert, den der Roboter selbst kennt. Das ersetzt
+das frühere Raten über die Saugmotor-Drehzahl.
 
 `unreachable` bedeutet: die Verbindung steht, aber der Roboter antwortet
 nicht – er schläft, oder die Brücke ist noch nicht mit ihm verdrahtet. Die
@@ -151,17 +155,29 @@ Software 4.5.3.189** – der vollständige Dump liegt in
 [`docs/reference-dump-botvac-d6.txt`](docs/reference-dump-botvac-d6.txt),
 die Auswertung in [docs/serial-commands.md](docs/serial-commands.md).
 
-Pause, Fortsetzen und Rückkehr zur Basis gibt es im `Clean`-Kommando nicht;
-der Roboter bietet dafür `SetButton`:
+Die `Help`-Ausgabe des Roboters ist allerdings nicht vollständig. Pause,
+Fortsetzen und **Rückkehr zur Basis** laufen über `SetEvent` – die
+authentifizierte Event-Schnittstelle, über die früher die Cloud den Roboter
+gesteuert hat und die in keiner Kommandoliste auftaucht. Ihr Schlüssel wird aus
+der MAC-Adresse aus `GetVersion` berechnet.
 
-| set-Kommando | Konsolenkommando |
+Gefunden und entschlüsselt hat das das Projekt
+[OpenNeato](https://github.com/renjfk/OpenNeato) (MIT, © 2026 Soner Köksal);
+hier steht eine eigenständige Perl-Umsetzung, gegen deren C++-Original auf
+bekannten Werten geprüft. Details in
+[docs/serial-commands.md](docs/serial-commands.md).
+
+| set-Kommando | Weg |
 |---|---|
-| `pause` / `resume` | `SetButton start` (Umschalter) |
-| `sendToBase` | `SetButton IRhome` |
+| `startCleaning`, `stop` | `SetEvent`, sonst `Clean House` / `Clean Stop` |
+| `pause` / `resume` | `SetEvent`; ohne Schlüssel `SetButton start` (Umschalter) |
+| `sendToBase` | **nur** `SetEvent` – `SetButton IRhome` und `back` tun auf einem D6 nichts |
 | `findMe` | `PlaySound SoundID 20` |
 
-Jedes davon lässt sich per Attribut überschreiben, falls deine Firmware
-anders heißt.
+Ob die Schnittstelle freigeschaltet ist, zeigt das Reading `commandApi`
+(`setEvent` oder `legacy`). Mit `attr <dev> useSetEvent 0` lassen sich die
+dokumentierten Kommandos erzwingen, und jedes Kommando bleibt per Attribut
+überschreibbar.
 
 ## Was nicht geht
 

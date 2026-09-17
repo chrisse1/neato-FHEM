@@ -14,6 +14,13 @@
 #     Readings and set commands intentionally follow 74_BOTVAC.pm where a
 #     sensible mapping exists, so existing notify/DOIF definitions keep working.
 #
+#     The SetEvent command, its UIMGR_EVENT_SMARTAPP_* events, the SKey
+#     derivation and the GetState command are not listed in the robot's own
+#     Help output. They were reverse engineered by the OpenNeato project
+#     (https://github.com/renjfk/OpenNeato, MIT, (c) 2026 Soner Koeksal);
+#     the implementation here is an independent reimplementation in Perl,
+#     verified against OpenNeato's C++ original on known values.
+#
 #     This file is part of https://github.com/chrisse1/neato-FHEM
 #     Released under the same license as FHEM itself (GPLv2).
 #
@@ -25,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.2.0";
+my $NeatoLocal_VERSION = "0.3.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -59,29 +66,42 @@ my %NeatoLocal_gets = (
     "charger"   => "noArg",
     "motors"    => "noArg",
     "sensors"   => "noArg",
+    "state"     => "noArg",
     "usage"     => "noArg",
     "settings"  => "noArg",
     "wifiStatus"=> "noArg",
 );
 
-# set name => attribute holding the serial command, default command.
-# The defaults are taken from the console of a BotVac D6 Connected running
-# software 4.5.3.189 (see docs/reference-dump-botvac-d6.txt). Any firmware that
-# names its commands differently can be adapted through the attributes.
+# The cloud used an authenticated event API that the Help output does not
+# mention. Where an event exists it is the better choice: it drives the robot's
+# own UI state machine and keeps map and localization across a pause, which the
+# simulated button presses below do not.
+my %NeatoLocal_events = (
+    "startCleaning" => "UIMGR_EVENT_SMARTAPP_START_HOUSE_CLEANING",
+    "spot"          => "UIMGR_EVENT_SMARTAPP_START_SPOT_CLEANING",
+    "pause"         => "UIMGR_EVENT_SMARTAPP_PAUSE_CLEANING",
+    "resume"        => "UIMGR_EVENT_SMARTAPP_RESUME_CLEANING",
+    "stop"          => "UIMGR_EVENT_SMARTAPP_STOP_CLEANING",
+    "sendToBase"    => "UIMGR_EVENT_SMARTAPP_SEND_TO_BASE",
+);
+
+# set name => [ attribute, fallback command ]. The fallback is used when the
+# robot offers no SKey (older firmware) or when useSetEvent is turned off.
+# Verified on a BotVac D6 Connected running software 4.5.3.189, see
+# docs/reference-dump-botvac-d6.txt.
 my %NeatoLocal_cmdMap = (
     "startCleaning" => [ "cmdCleanHouse",      "Clean House"          ],
     "spot"          => [ "cmdCleanSpot",       "Clean Spot"           ],
     "explore"       => [ "cmdCleanExplore",    "Clean Explore"        ],
     "persistent"    => [ "cmdCleanPersistent", "Clean Persistent"     ],
     "stop"          => [ "cmdCleanStop",       "Clean Stop"           ],
-    # The console offers no pause/resume of its own. Pressing Start while the
-    # robot cleans pauses it and pressing it again resumes, so both map to the
-    # same simulated button -- it toggles rather than setting a state.
+    # Pressing Start toggles between pausing and resuming; there are no
+    # separate console commands for it.
     "pause"         => [ "cmdCleanPause",      "SetButton start"      ],
     "resume"        => [ "cmdCleanResume",     "SetButton start"      ],
-    # No documented dock command exists; the home key of the IR remote is the
-    # closest equivalent the firmware exposes.
-    "sendToBase"    => [ "cmdSendToBase",      "SetButton IRhome"     ],
+    # Without the event API there is no way to send the robot home: neither
+    # SetButton IRhome nor SetButton back does anything on a D6.
+    "sendToBase"    => [ "cmdSendToBase",      ""                     ],
     "findMe"        => [ "cmdFindMe",          "PlaySound SoundID 20" ],
 );
 
@@ -112,7 +132,7 @@ sub NeatoLocal_Initialize($) {
 
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
                       . "interval timeout "
-                      . "pollErrors:0,1 pollMotors:0,1 "
+                      . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
                       . "cmdCleanPause cmdCleanResume cmdSendToBase cmdFindMe "
@@ -549,6 +569,50 @@ sub NeatoLocal_ParseCsv($) {
     return \%values;
 }
 
+# The event API is authenticated with a key derived from the MAC address that
+# GetVersion reports in the Serial Number row. RC4 with a fixed seed, the
+# keystream XORed over the MAC characters, hex encoded, and a 25th character
+# that repeats the seventh -- an oddity of the firmware, not a mistake here.
+#
+# Algorithm from OpenNeato (MIT, (c) 2026 Soner Koeksal), reimplemented and
+# checked against its C++ original.
+sub NeatoLocal_ComputeSKey($) {
+    my ($serial) = @_;
+
+    return "" if (!defined($serial));
+    my $comma = index($serial, ",");
+    return "" if ($comma < 0);
+
+    my $mac = substr($serial, $comma + 1, 12);
+    return "" if (length($mac) != 12);
+
+    my @seed = (0x68, 0x36, 0x43, 0x58, 0x09, 0x09, 0x3A, 0x3C, 0x2A, 0x7B, 0x59);
+
+    my @s = (0 .. 255);
+    my $j = 0;
+    foreach my $i (0 .. 255) {
+        $j = ($j + $s[$i] + $seed[$i % 11]) & 0xFF;
+        @s[$i, $j] = @s[$j, $i];
+    }
+
+    my @ks;
+    my $ii = 0;
+    $j = 0;
+    foreach my $k (0 .. 11) {
+        $ii = ($ii + 1) & 0xFF;
+        $j  = ($j + $s[$ii]) & 0xFF;
+        @s[$ii, $j] = @s[$j, $ii];
+        $ks[$k] = $s[($s[$ii] + $s[$j]) & 0xFF];
+    }
+
+    my $key = "";
+    foreach my $k (0 .. 11) {
+        $key .= sprintf("%02x", $ks[$k] ^ ord(substr($mac, $k, 1)));
+    }
+
+    return $key . substr($key, 6, 1);
+}
+
 sub NeatoLocal_ParseVersion($$$) {
     my ($hash, $entry, $body) = @_;
 
@@ -581,8 +645,21 @@ sub NeatoLocal_ParseVersion($$$) {
         last;
     }
 
-    readingsBulkUpdateIfChanged($hash, "serialNumber", $v{"Serial Number"}[0])
-        if (defined($v{"Serial Number"}) && @{$v{"Serial Number"}});
+    # "Serial Number,GPC33719,40bd32d1097a,P" -- the second value column is the
+    # MAC the event key is derived from, so the whole row has to be kept, not
+    # just the serial itself.
+    if (defined($v{"Serial Number"}) && @{$v{"Serial Number"}}) {
+        readingsBulkUpdateIfChanged($hash, "serialNumber", $v{"Serial Number"}[0]);
+
+        my $key = NeatoLocal_ComputeSKey(join(",", @{$v{"Serial Number"}}));
+        $hash->{helper}{skey} = $key;
+        readingsBulkUpdateIfChanged($hash, "commandApi",
+            ($key ne "") ? "setEvent" : "legacy");
+
+        Log3 $hash->{NAME}, 3, "NeatoLocal (" . $hash->{NAME} . ") - event API "
+            . (($key ne "") ? "available" : "not available, falling back to "
+                            . "the documented commands");
+    }
 
     # the version is spread over the value columns: 4,5,3,189,0 -> 4.5.3.189.0
     foreach my $k ("Software", "MainBoard Software", "Software Version") {
@@ -718,6 +795,51 @@ sub NeatoLocal_ParseMotors($$$) {
     return undef;
 }
 
+# GetState is another command the Help output does not mention. It reports what
+# the robot itself thinks it is doing, which beats inferring it from the vacuum
+# motor's RPM:
+#
+#   Current UI State is: UIMGR_STATE_STANDBY
+#   Current Robot State is: ST_C_Standby
+sub NeatoLocal_ParseState($$$) {
+    my ($hash, $entry, $body) = @_;
+
+    my ($ui, $robot) = ("", "");
+    $ui    = $1 if ($body =~ m/Current UI State is:\s*(\S+)/i);
+    $robot = $1 if ($body =~ m/Current Robot State is:\s*(\S+)/i);
+
+    return undef if ($ui eq "" && $robot eq "");
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdateIfChanged($hash, "uiState", $ui)       if ($ui ne "");
+    readingsBulkUpdateIfChanged($hash, "robotState", $robot) if ($robot ne "");
+    readingsEndUpdate($hash, 1);
+
+    # a state the robot reports itself is authoritative
+    $hash->{helper}{assumeCleaning} = 0;
+
+    NeatoLocal_UpdateState($hash);
+
+    return undef;
+}
+
+# Is the robot idle according to its own state machine? Firmware 4.5.3 and
+# later report a robot state, which is the reliable one -- the UI state can
+# still read STARTHOUSECLEANING while the robot is back in standby.
+sub NeatoLocal_StateIsIdle($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    my $robot = ReadingsVal($name, "robotState", "");
+    if ($robot ne "") {
+        return ($robot eq "ST_C_Standby" || $robot eq "ST_C_Idle"
+                || $robot eq "ST_M2_Charging_StdBy") ? 1 : 0;
+    }
+
+    my $ui = ReadingsVal($name, "uiState", "");
+    return ($ui eq "UIMGR_STATE_IDLE" || $ui eq "UIMGR_STATE_STANDBY") ? 1 : 0;
+}
+
 sub NeatoLocal_UpdateState($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
@@ -727,6 +849,9 @@ sub NeatoLocal_UpdateState($) {
     my $docked     = ReadingsVal($name, "isDocked", 0);
     my $cleaning   = ReadingsVal($name, "isCleaning", 0);
     my $assume     = $hash->{helper}{assumeCleaning} ? 1 : 0;
+    my $ui         = ReadingsVal($name, "uiState", "");
+    my $robot      = ReadingsVal($name, "robotState", "");
+    my $haveState  = ($ui ne "" || $robot ne "") ? 1 : 0;
 
     my $state;
     # Nothing we think we know is worth anything while the robot is silent.
@@ -736,7 +861,17 @@ sub NeatoLocal_UpdateState($) {
     elsif ($errorCode) {
         $state = "error";
     }
-    elsif ($cleaning || $assume) {
+    elsif ($ui =~ m/CLEANINGPAUSED/i) {
+        $state = "paused";
+    }
+    elsif ($ui =~ m/DOCKING/i) {
+        $state = "docking";
+    }
+    elsif ($haveState && !NeatoLocal_StateIsIdle($hash) && $ui =~ m/CLEAN/i) {
+        $state = "cleaning";
+    }
+    elsif (!$haveState && ($cleaning || $assume)) {
+        # no state from the robot, so fall back to the vacuum motor
         $state = "cleaning";
     }
     elsif ($charging) {
@@ -773,10 +908,13 @@ sub NeatoLocal_StatusRequest($) {
     }
 
     NeatoLocal_Enqueue($hash, "GetCharger", \&NeatoLocal_ParseCharger);
+    NeatoLocal_Enqueue($hash, "GetState", \&NeatoLocal_ParseState)
+        if (AttrVal($name, "pollState", 1));
     NeatoLocal_Enqueue($hash, "GetErr", \&NeatoLocal_ParseErr)
         if (AttrVal($name, "pollErrors", 1));
+    # GetState made this redundant, so it is off by default now
     NeatoLocal_Enqueue($hash, "GetMotors", \&NeatoLocal_ParseMotors)
-        if (AttrVal($name, "pollMotors", 1));
+        if (AttrVal($name, "pollMotors", 0));
 
     return undef;
 }
@@ -788,16 +926,27 @@ sub NeatoLocal_MappedCmd($$) {
     my $map = $NeatoLocal_cmdMap{$key};
     return (undef, "unknown command '$key'") if (!defined($map));
 
-    my ($attr, $default) = @$map;
-    my $cmd = AttrVal($name, $attr, $default);
+    my ($attr, $fallback) = @$map;
 
-    return (undef, "no serial command configured for '$key'. The Botvac D-series "
-                 . "syntax for this action is not verified -- run 'get $name help Clean' "
-                 . "on your robot and set the attribute $attr accordingly "
-                 . "(see docs/serial-commands.md)")
-        if (!defined($cmd) || $cmd eq "");
+    # an explicitly configured attribute always wins
+    my $configured = AttrVal($name, $attr, undef);
+    return ($configured, undef) if (defined($configured) && $configured ne "");
 
-    return ($cmd, undef);
+    # the event API drives the robot's own state machine, so prefer it
+    my $skey = $hash->{helper}{skey};
+    if (defined($NeatoLocal_events{$key})
+        && defined($skey) && $skey ne ""
+        && AttrVal($name, "useSetEvent", 1)) {
+        return ("SetEvent event " . $NeatoLocal_events{$key} . " SKey " . $skey, undef);
+    }
+
+    return (undef, "no command available for '$key' on this robot. It needs the "
+                 . "event API, which requires the MAC from GetVersion -- run "
+                 . "'get $name version' and check the reading commandApi. A "
+                 . "command can also be set by hand via the attribute $attr.")
+        if (!defined($fallback) || $fallback eq "");
+
+    return ($fallback, undef);
 }
 
 sub NeatoLocal_Set($@) {
@@ -962,6 +1111,7 @@ sub NeatoLocal_Get($@) {
         "charger"    => [ "GetCharger",       \&NeatoLocal_ParseCharger ],
         "motors"     => [ "GetMotors",        \&NeatoLocal_ParseMotors  ],
         "sensors"    => [ "GetAnalogSensors", undef                     ],
+        "state"      => [ "GetState",         \&NeatoLocal_ParseState   ],
         "usage"      => [ "GetUsage",         undef                     ],
         "settings"   => [ "GetUserSettings",  undef                     ],
         "wifiStatus" => [ "GetWifiStatus",    undef                     ],
@@ -1050,12 +1200,13 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>startCleaning [house|spot|explore|persistent]</b> - starts a cleaning
         run, an exploration run or a run on the stored map</li>
     <li><b>stop</b> - stops the current run</li>
-    <li><b>pause</b> / <b>resume</b> - simulates a press of the Start button,
-        which pauses a running cleaning and resumes a paused one. The robot
-        offers no separate commands, so both send the same toggle.</li>
-    <li><b>sendToBase</b> - sends the robot home via the home key of the IR
-        remote. If your model ignores it, try
-        <code>attr &lt;dev&gt; cmdSendToBase SetButton back</code>.</li>
+    <li><b>pause</b> / <b>resume</b> - pauses and resumes a run. Uses the event
+        API where available, which keeps map and localization across the pause.
+        Without it, both fall back to simulating a press of the Start button,
+        which the robot treats as a toggle.</li>
+    <li><b>sendToBase</b> - sends the robot home through the event API that the
+        app used to drive through the cloud. The documented commands offer no
+        way to do this at all.</li>
     <li><b>findMe</b> - plays the "Find me" sound on the robot</li>
     <li><b>clearError</b> - dismisses the reported error (GetErr Clear)</li>
     <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - cleaning mode</li>
@@ -1087,7 +1238,12 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>interval</b> - polling interval in seconds, default 60</li>
     <li><b>timeout</b> - response timeout in seconds, default 10</li>
     <li><b>pollErrors</b> - poll GetErr, default 1</li>
-    <li><b>pollMotors</b> - poll GetMotors to detect cleaning, default 1</li>
+    <li><b>pollState</b> - poll GetState, default 1. This is what the robot
+        itself reports and is far more reliable than inferring the state.</li>
+    <li><b>pollMotors</b> - poll GetMotors, default 0 since GetState replaced
+        its role</li>
+    <li><b>useSetEvent</b> - use the event API where available, default 1.
+        Setting this to 0 forces the documented commands.</li>
     <li><b>cmdCleanHouse</b>, <b>cmdCleanSpot</b>, <b>cmdCleanExplore</b>,
         <b>cmdCleanPersistent</b>, <b>cmdCleanStop</b>, <b>cmdCleanPause</b>,
         <b>cmdCleanResume</b>, <b>cmdSendToBase</b>, <b>cmdFindMe</b> - the
@@ -1102,7 +1258,12 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocalreadings"></a>
   <b>Readings</b>
   <ul>
-    <li><b>state</b> - cleaning, charging, docked, idle, error, unreachable or
+    <li><b>uiState</b>, <b>robotState</b> - what the robot reports about
+        itself, e.g. UIMGR_STATE_STANDBY and ST_C_Standby</li>
+    <li><b>commandApi</b> - setEvent or legacy, depending on whether the event
+        API could be unlocked</li>
+    <li><b>state</b> - cleaning, paused, docking, charging, docked, idle,
+        error, unreachable or
         disconnected. <i>unreachable</i> means the connection is up but the
         robot does not answer -- asleep, or a bridge that is not wired to it
         yet. Polling then backs off up to 16x the interval instead of filling
@@ -1167,13 +1328,14 @@ sub NeatoLocal_LeaveTestMode($) {
         Reinigung, eine Erkundungsfahrt oder eine Fahrt auf der gespeicherten
         Karte</li>
     <li><b>stop</b> - beendet die laufende Reinigung</li>
-    <li><b>pause</b> / <b>resume</b> - simuliert einen Druck auf die
-        Start-Taste: der pausiert eine laufende Reinigung und setzt eine
-        pausierte fort. Der Roboter kennt dafuer keine getrennten Kommandos,
-        beide senden denselben Umschalter.</li>
-    <li><b>sendToBase</b> - schickt den Roboter ueber die Home-Taste der
-        IR-Fernbedienung zurueck. Reagiert dein Modell nicht, hilft
-        <code>attr &lt;dev&gt; cmdSendToBase SetButton back</code>.</li>
+    <li><b>pause</b> / <b>resume</b> - pausiert und setzt fort. Nutzt die
+        Event-Schnittstelle, wenn verfuegbar; damit bleiben Karte und
+        Selbstlokalisierung ueber die Pause erhalten. Ohne sie simulieren beide
+        einen Druck auf die Start-Taste, den der Roboter als Umschalter
+        behandelt.</li>
+    <li><b>sendToBase</b> - schickt den Roboter zur Basis, ueber die
+        Event-Schnittstelle, mit der die App das durch die Cloud getan hat. Mit
+        den dokumentierten Kommandos ist das gar nicht moeglich.</li>
     <li><b>findMe</b> - spielt den Ton "Find me" ab</li>
     <li><b>clearError</b> - quittiert den gemeldeten Fehler (GetErr Clear)</li>
     <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - Reinigungsmodus</li>
@@ -1205,8 +1367,13 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>interval</b> - Abfrageintervall in Sekunden, Standard 60</li>
     <li><b>timeout</b> - Antwort-Timeout in Sekunden, Standard 10</li>
     <li><b>pollErrors</b> - GetErr mit abfragen, Standard 1</li>
-    <li><b>pollMotors</b> - GetMotors abfragen, um die Reinigung zu erkennen,
-        Standard 1</li>
+    <li><b>pollState</b> - GetState abfragen, Standard 1. Das ist der Zustand,
+        den der Roboter selbst meldet, und damit deutlich verlaesslicher als
+        jede Ableitung.</li>
+    <li><b>pollMotors</b> - GetMotors abfragen, Standard 0, seit GetState diese
+        Aufgabe uebernommen hat</li>
+    <li><b>useSetEvent</b> - die Event-Schnittstelle nutzen, wenn verfuegbar,
+        Standard 1. Mit 0 werden die dokumentierten Kommandos erzwungen.</li>
     <li><b>cmdCleanHouse</b>, <b>cmdCleanSpot</b>, <b>cmdCleanExplore</b>,
         <b>cmdCleanPersistent</b>, <b>cmdCleanStop</b>, <b>cmdCleanPause</b>,
         <b>cmdCleanResume</b>, <b>cmdSendToBase</b>, <b>cmdFindMe</b> - das
@@ -1221,8 +1388,12 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocalreadings"></a>
   <b>Readings</b>
   <ul>
-    <li><b>state</b> - cleaning, charging, docked, idle, error, unreachable
-        oder disconnected. <i>unreachable</i> heisst: die Verbindung steht,
+    <li><b>uiState</b>, <b>robotState</b> - was der Roboter ueber sich selbst
+        meldet, z. B. UIMGR_STATE_STANDBY und ST_C_Standby</li>
+    <li><b>commandApi</b> - setEvent oder legacy, je nachdem ob sich die
+        Event-Schnittstelle freischalten liess</li>
+    <li><b>state</b> - cleaning, paused, docking, charging, docked, idle,
+        error, unreachable oder disconnected. <i>unreachable</i> heisst: die Verbindung steht,
         aber der Roboter antwortet nicht -- er schlaeft, oder die Bruecke ist
         noch nicht mit ihm verdrahtet. Die Abfrage geht dann bis auf das
         16-fache Intervall zurueck, statt das Log zu fluten.</li>
