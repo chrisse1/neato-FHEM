@@ -91,12 +91,28 @@ laufendes `dump_robot.py` blockiert FHEM und umgekehrt.
 
 ### Über den FHEM-Updatemechanismus
 
-Solange das Repository öffentlich ist, kommen Aktualisierungen so mit `update`
-mit:
+Der bequemste Weg, wenn du Aktualisierungen mitnehmen willst. In der
+FHEM-Kommandozeile:
 
 ```
 update add https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt
+update
+shutdown restart
 ```
+
+Danach genügt ein `update`, um auf den neuesten Stand zu kommen; `update check`
+zeigt vorher, was sich ändern würde. Entfernen lässt sich die Quelle mit
+`update delete https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt`.
+
+**Das Repository muss dafür öffentlich sein.** FHEM kann sich bei GitHub nicht
+anmelden, und private Repositories antworten auf anonyme Anfragen mit 404 –
+`update` würde also scheitern, ohne dass die Meldung den Grund nennt. Solange
+es privat bleibt, ist der Weg über `cp` oben der richtige.
+
+Die Indexdatei `controls_neatolocal.txt` hält Größe und Zeitstempel jedes
+Moduls; nur wenn die sich ändern, bietet FHEM ein Update an. Sie wird bei jedem
+Push nach `main`, der `FHEM/` berührt, automatisch von der CI erneuert – von
+Hand ginge `tools/make_controls.sh`.
 
 ## Verwendung
 
