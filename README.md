@@ -111,6 +111,9 @@ set Staubsauger sendToBase
 set Staubsauger findMe
 set Staubsauger clearError
 set Staubsauger navigationMode Deep       # Normal|Gentle|Deep|Quick
+set Staubsauger ecoMode on                # leiser, weniger Saugleistung
+set Staubsauger intenseClean off
+set Staubsauger binFullDetect on
 set Staubsauger syncTime                   # Uhr des Roboters stellen
 set Staubsauger statusRequest
 
@@ -124,6 +127,13 @@ Readings: `state`
 `batteryPercent`, `isCharging`, `isDocked`, `isCleaning`, `vacuumRPM`,
 `error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `uiState`,
 `robotState`, `commandApi`, `model`, `serialNumber`, `firmware`, `ldsSoftware`.
+
+Aus `GetUserSettings` kommen zusätzlich `ecoMode`, `intenseClean`,
+`binFullDetect`, `wallFollower`, `clickSounds`, `melodySounds`,
+`warningSounds`, `led`, `wifiEnabled`, `language`, `filterChangeTime`,
+`brushChangeTime`, `dirtBinInterval`, `scheduleEnabled` und
+`scheduledCleanings`. Die werden beim Verbinden und nach jeder Änderung
+gelesen – diese Readings stammen also wirklich vom Gerät.
 
 Der **Reinigungsmodus** steht im Reading `navigationMode` – mit einer
 Einschränkung: die Konsole kennt kein Kommando, ihn auszulesen. Das Reading ist

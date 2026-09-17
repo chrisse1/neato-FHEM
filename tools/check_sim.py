@@ -172,6 +172,23 @@ def main():
     c.send("SetEvent event UIMGR_EVENT_SMARTAPP_STOP_CLEANING SKey " + key)
     c.close()
 
+    # --- user settings round trip --------------------------------------------
+    c = Client(host, port)
+    cfg = c.csv("GetUserSettings")
+    check(cfg.get("Eco Mode") == "OFF", "eco mode starts off")
+    check(cfg.get("Bin Full Detect") == "ON", "bin full detect starts on")
+    check("Schedule is Disabled" in c.send("GetUserSettings"),
+          "the schedule line has no value column")
+
+    check(c.send("SetUserSettings EcoMode ON") == "", "eco mode can be set")
+    check(c.csv("GetUserSettings").get("Eco Mode") == "ON", "and reads back changed")
+    check(c.send("SetUserSettings EcoMode maybe").startswith("Value must be"),
+          "a bad value is refused")
+    check(c.send("SetUserSettings Nonsense ON").startswith("Unknown setting"),
+          "an unknown setting is refused")
+    c.send("SetUserSettings EcoMode OFF")
+    c.close()
+
     print()
     if FAILED:
         print("%d check(s) failed" % len(FAILED))

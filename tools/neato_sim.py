@@ -41,6 +41,8 @@ class Robot:
         self.alert = None
         self.test_mode = False
         self.nav_mode = "Normal"
+        self.settings = {"EcoMode": "OFF", "IntenseClean": "OFF",
+                         "BinFullDetect": "ON"}
         self.last = time.monotonic()
 
     def _advance(self):
@@ -409,6 +411,45 @@ def handle_command(robot, line):
             robot.press_button("irhome")
             return ""
         return "Unknown event: %s" % event
+
+    if low == "getusersettings":
+        with robot.lock:
+            cfg = dict(robot.settings)
+        # spelled and spaced exactly like the real firmware, trailing blanks
+        # included -- that is what the parser has to cope with
+        return "\n".join([
+            "Language, EL_NONE ",
+            "ClickSounds, ON ",
+            "LED, ON ",
+            "Wall Enable, ON ",
+            "Eco Mode, %s " % cfg["EcoMode"],
+            "IntenseClean, %s " % cfg["IntenseClean"],
+            "WiFi, OFF ",
+            "Melody Sounds, ON ",
+            "Warning Sounds, ON ",
+            "Bin Full Detect, %s " % cfg["BinFullDetect"],
+            "Filter Change Time (seconds), 43200 ",
+            "Brush Change Time (seconds), 259200 ",
+            "Dirt Bin Alert Reminder Interval (minutes), 90 ",
+            "Current Dirt Bin Runtime is: 0",
+            "Schedule is Disabled",
+            "Sun 00:00 -None-",
+        ])
+
+    if low.startswith("setusersettings"):
+        parts = cmd.split()
+        if len(parts) < 3:
+            return "SetUserSettings requires a key and a value"
+        key, value = parts[1], parts[2].upper()
+        match = [k for k in ("EcoMode", "IntenseClean", "BinFullDetect")
+                 if k.lower() == key.lower()]
+        if not match:
+            return "Unknown setting: %s" % key
+        if value not in ("ON", "OFF"):
+            return "Value must be ON or OFF"
+        with robot.lock:
+            robot.settings[match[0]] = value
+        return ""
 
     if low == "getusage":
         return "\n".join([

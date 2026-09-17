@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.4.0";
+my $NeatoLocal_VERSION = "0.5.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -50,6 +50,9 @@ my %NeatoLocal_sets = (
     "findMe"         => "noArg",
     "clearError"     => "noArg",
     "navigationMode" => "Normal,Gentle,Deep,Quick",
+    "ecoMode"        => "on,off",
+    "intenseClean"   => "on,off",
+    "binFullDetect"  => "on,off",
     "syncTime"       => "noArg",
     "button"         => "soft,start,spot,back,up,down,IRstart,IRspot,IRfront,"
                       . "IRback,IRleft,IRright,IRhome,IReco",
@@ -113,6 +116,32 @@ my @NeatoLocal_buttons = qw(soft start spot back up down
 # SetNavigationMode
 my @NeatoLocal_navModes = qw(Normal Gentle Deep Quick);
 
+# GetUserSettings answers "Key, Value" per line, with the keys spelled out.
+# Taken verbatim from a BotVac D6 Connected, see
+# docs/reference-dump-botvac-d6.txt.
+my %NeatoLocal_settingMap = (
+    "Language"                                   => "language",
+    "ClickSounds"                                => "clickSounds",
+    "LED"                                        => "led",
+    "Wall Enable"                                => "wallFollower",
+    "Eco Mode"                                   => "ecoMode",
+    "IntenseClean"                               => "intenseClean",
+    "WiFi"                                       => "wifiEnabled",
+    "Melody Sounds"                              => "melodySounds",
+    "Warning Sounds"                             => "warningSounds",
+    "Bin Full Detect"                            => "binFullDetect",
+    "Filter Change Time (seconds)"               => "filterChangeTime",
+    "Brush Change Time (seconds)"                => "brushChangeTime",
+    "Dirt Bin Alert Reminder Interval (minutes)" => "dirtBinInterval",
+);
+
+# set name => the argument SetUserSettings expects
+my %NeatoLocal_settingCmds = (
+    "ecoMode"      => "EcoMode",
+    "intenseClean" => "IntenseClean",
+    "binFullDetect"=> "BinFullDetect",
+);
+
 ##############################################################################
 # FHEM interface
 ##############################################################################
@@ -132,7 +161,7 @@ sub NeatoLocal_Initialize($) {
 
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
                       . "interval timeout "
-                      . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 useSetEvent:0,1 "
+                      . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
                       . "cmdCleanPause cmdCleanResume cmdSendToBase cmdFindMe "
@@ -261,6 +290,7 @@ sub NeatoLocal_Init($) {
     Log3 $name, 4, "NeatoLocal ($name) - initializing communication";
 
     NeatoLocal_Enqueue($hash, "GetVersion", \&NeatoLocal_ParseVersion);
+    NeatoLocal_Enqueue($hash, "GetUserSettings", \&NeatoLocal_ParseUserSettings);
     NeatoLocal_StatusRequest($hash);
     NeatoLocal_RestartTimer($hash);
 
@@ -840,6 +870,56 @@ sub NeatoLocal_StateIsIdle($) {
     return ($ui eq "UIMGR_STATE_IDLE" || $ui eq "UIMGR_STATE_STANDBY") ? 1 : 0;
 }
 
+sub NeatoLocal_ParseUserSettings($$$) {
+    my ($hash, $entry, $body) = @_;
+
+    my $found = 0;
+    my $scheduled = 0;
+
+    readingsBeginUpdate($hash);
+
+    foreach my $line (split(/\r?\n/, $body)) {
+        $line =~ s/\s+$//;
+        next if ($line eq "");
+
+        # "Schedule is Disabled" stands on its own, without a value column
+        if ($line =~ m/^Schedule is (\w+)/i) {
+            readingsBulkUpdateIfChanged($hash, "scheduleEnabled",
+                (lc($1) eq "enabled") ? 1 : 0);
+            $found = 1;
+            next;
+        }
+
+        # the schedule itself follows as one line per day, the empty ones
+        # reading "-None-"
+        if ($line =~ m/\d\d:\d\d\s+(.+)$/) {
+            my $what = $1;
+            $what =~ s/\s+$//;
+            $scheduled++ if ($what ne "-None-");
+            next;
+        }
+
+        next if ($line !~ m/^([^,]+),\s*(.*)$/);
+        my ($key, $val) = ($1, $2);
+        $key =~ s/^\s+|\s+$//g;
+        $val =~ s/^\s+|\s+$//g;
+
+        my $reading = $NeatoLocal_settingMap{$key};
+        next if (!defined($reading));
+
+        # ON/OFF reads better as on/off next to the set commands
+        $val = lc($val) if ($val =~ m/^(ON|OFF)$/i);
+
+        readingsBulkUpdateIfChanged($hash, $reading, $val);
+        $found = 1;
+    }
+
+    readingsBulkUpdateIfChanged($hash, "scheduledCleanings", $scheduled) if ($found);
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
 sub NeatoLocal_UpdateState($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
@@ -915,6 +995,9 @@ sub NeatoLocal_StatusRequest($) {
     # GetState made this redundant, so it is off by default now
     NeatoLocal_Enqueue($hash, "GetMotors", \&NeatoLocal_ParseMotors)
         if (AttrVal($name, "pollMotors", 0));
+    # settings change rarely, so they are fetched on connect, not every cycle
+    NeatoLocal_Enqueue($hash, "GetUserSettings", \&NeatoLocal_ParseUserSettings)
+        if (AttrVal($name, "pollSettings", 0));
 
     return undef;
 }
@@ -1030,6 +1113,19 @@ sub NeatoLocal_Set($@) {
         return undef;
     }
 
+    if (defined($NeatoLocal_settingCmds{$cmd})) {
+        my $arg = defined($args[0]) ? lc($args[0]) : "";
+        return "usage: set $name $cmd <on|off>" if ($arg !~ m/^(on|off)$/);
+
+        NeatoLocal_Enqueue($hash,
+            "SetUserSettings " . $NeatoLocal_settingCmds{$cmd} . " " . uc($arg),
+            \&NeatoLocal_ParseGeneric);
+
+        # read it back, so the reading reflects the robot rather than our hope
+        NeatoLocal_Enqueue($hash, "GetUserSettings", \&NeatoLocal_ParseUserSettings);
+        return undef;
+    }
+
     if ($cmd eq "navigationMode") {
         my $mode = defined($args[0]) ? ucfirst(lc($args[0])) : "";
         return "usage: set $name navigationMode <"
@@ -1128,7 +1224,7 @@ sub NeatoLocal_Get($@) {
         "sensors"    => [ "GetAnalogSensors", undef                     ],
         "state"      => [ "GetState",         \&NeatoLocal_ParseState   ],
         "usage"      => [ "GetUsage",         undef                     ],
-        "settings"   => [ "GetUserSettings",  undef                     ],
+        "settings"   => [ "GetUserSettings",  \&NeatoLocal_ParseUserSettings ],
         "wifiStatus" => [ "GetWifiStatus",    undef                     ],
     );
 
@@ -1224,6 +1320,10 @@ sub NeatoLocal_LeaveTestMode($) {
         way to do this at all.</li>
     <li><b>findMe</b> - plays the "Find me" sound on the robot</li>
     <li><b>clearError</b> - dismisses the reported error (GetErr Clear)</li>
+    <li><b>ecoMode &lt;on|off&gt;</b>, <b>intenseClean &lt;on|off&gt;</b>,
+        <b>binFullDetect &lt;on|off&gt;</b> - user settings on the robot. Unlike
+        the navigation mode these are read back afterwards, so their readings
+        come from the device.</li>
     <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - cleaning mode.
         The console has no command to read it back, so the reading of the same
         name is what FHEM last set, not what the robot reports. It is re-sent
@@ -1257,6 +1357,8 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>interval</b> - polling interval in seconds, default 60</li>
     <li><b>timeout</b> - response timeout in seconds, default 10</li>
     <li><b>pollErrors</b> - poll GetErr, default 1</li>
+    <li><b>pollSettings</b> - also poll GetUserSettings every cycle, default 0.
+        They are read on connect and after every change anyway.</li>
     <li><b>pollState</b> - poll GetState, default 1. This is what the robot
         itself reports and is far more reliable than inferring the state.</li>
     <li><b>pollMotors</b> - poll GetMotors, default 0 since GetState replaced
@@ -1277,6 +1379,12 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocalreadings"></a>
   <b>Readings</b>
   <ul>
+    <li><b>ecoMode</b>, <b>intenseClean</b>, <b>binFullDetect</b>,
+        <b>wallFollower</b>, <b>clickSounds</b>, <b>melodySounds</b>,
+        <b>warningSounds</b>, <b>led</b>, <b>wifiEnabled</b>, <b>language</b>,
+        <b>filterChangeTime</b>, <b>brushChangeTime</b>, <b>dirtBinInterval</b>,
+        <b>scheduleEnabled</b>, <b>scheduledCleanings</b> - from
+        GetUserSettings, fetched on connect and after every change</li>
     <li><b>uiState</b>, <b>robotState</b> - what the robot reports about
         itself, e.g. UIMGR_STATE_STANDBY and ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent or legacy, depending on whether the event
@@ -1357,6 +1465,10 @@ sub NeatoLocal_LeaveTestMode($) {
         den dokumentierten Kommandos ist das gar nicht moeglich.</li>
     <li><b>findMe</b> - spielt den Ton "Find me" ab</li>
     <li><b>clearError</b> - quittiert den gemeldeten Fehler (GetErr Clear)</li>
+    <li><b>ecoMode &lt;on|off&gt;</b>, <b>intenseClean &lt;on|off&gt;</b>,
+        <b>binFullDetect &lt;on|off&gt;</b> - Einstellungen im Roboter. Anders
+        als der Navigationsmodus werden sie danach zurueckgelesen, die Readings
+        stammen also vom Geraet.</li>
     <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - Reinigungsmodus.
         Die Konsole kennt kein Kommando, ihn auszulesen; das gleichnamige
         Reading ist deshalb das, was FHEM zuletzt gesetzt hat, nicht die
@@ -1390,6 +1502,9 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>interval</b> - Abfrageintervall in Sekunden, Standard 60</li>
     <li><b>timeout</b> - Antwort-Timeout in Sekunden, Standard 10</li>
     <li><b>pollErrors</b> - GetErr mit abfragen, Standard 1</li>
+    <li><b>pollSettings</b> - GetUserSettings bei jedem Durchlauf mitfragen,
+        Standard 0. Beim Verbinden und nach jeder Aenderung werden sie ohnehin
+        gelesen.</li>
     <li><b>pollState</b> - GetState abfragen, Standard 1. Das ist der Zustand,
         den der Roboter selbst meldet, und damit deutlich verlaesslicher als
         jede Ableitung.</li>
@@ -1411,6 +1526,12 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocalreadings"></a>
   <b>Readings</b>
   <ul>
+    <li><b>ecoMode</b>, <b>intenseClean</b>, <b>binFullDetect</b>,
+        <b>wallFollower</b>, <b>clickSounds</b>, <b>melodySounds</b>,
+        <b>warningSounds</b>, <b>led</b>, <b>wifiEnabled</b>, <b>language</b>,
+        <b>filterChangeTime</b>, <b>brushChangeTime</b>, <b>dirtBinInterval</b>,
+        <b>scheduleEnabled</b>, <b>scheduledCleanings</b> - aus
+        GetUserSettings, beim Verbinden und nach jeder Aenderung geholt</li>
     <li><b>uiState</b>, <b>robotState</b> - was der Roboter ueber sich selbst
         meldet, z. B. UIMGR_STATE_STANDBY und ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent oder legacy, je nachdem ob sich die

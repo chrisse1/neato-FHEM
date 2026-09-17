@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 90;
+use Test::More tests => 105;
 
 package main;
 
@@ -269,6 +269,59 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "and the state follows the robo
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_STARTHOUSECLEANING",
    "an unparseable answer leaves the last state alone");
+
+# --- user settings -----------------------------------------------------------
+# Verbatim GetUserSettings output of a BotVac D6 Connected, including the
+# trailing spaces and the garbled schedule lines.
+my $settings = "Language, EL_NONE \r\nClickSounds, ON \r\nLED, ON \r\n"
+             . "Wall Enable, ON \r\nEco Mode, OFF \r\nIntenseClean, OFF \r\n"
+             . "WiFi, OFF \r\nMelody Sounds, ON \r\nWarning Sounds, ON \r\n"
+             . "Bin Full Detect, ON \r\nFilter Change Time (seconds), 43200 \r\n"
+             . "Brush Change Time (seconds), 259200 \r\n"
+             . "Dirt Bin Alert Reminder Interval (minutes), 90 \r\n"
+             . "Current Dirt Bin Runtime is: 0\r\n"
+             . "Number of Cleanings where Dust Bin was Full is: 0\r\n"
+             . "Schedule is Disabled\r\n"
+             . "\xef\xbf\xbd' 00:00 -None-\r\n"
+             . "\xef\xbf\xbd' 00:00 -None-\r\n";
+
+NeatoLocal_ParseUserSettings($h, { cmd => "GetUserSettings" }, $settings);
+is(ReadingsVal("nt", "ecoMode", ""), "off", "eco mode parsed and lowercased");
+is(ReadingsVal("nt", "intenseClean", ""), "off", "intense clean parsed");
+is(ReadingsVal("nt", "binFullDetect", ""), "on", "bin full detect parsed");
+is(ReadingsVal("nt", "wifiEnabled", ""), "off", "wifi state parsed");
+is(ReadingsVal("nt", "filterChangeTime", ""), "43200", "numeric setting kept as is");
+is(ReadingsVal("nt", "dirtBinInterval", ""), "90", "key with parentheses parsed");
+is(ReadingsVal("nt", "scheduleEnabled", ""), 0, "schedule state parsed from its own line");
+is(ReadingsVal("nt", "scheduledCleanings", ""), 0, "empty schedule slots are not counted");
+
+# a filled schedule slot has to count
+NeatoLocal_ParseUserSettings($h, { cmd => "GetUserSettings" },
+    "Schedule is Enabled\r\nMon 09:30 House\r\nTue 00:00 -None-\r\n");
+is(ReadingsVal("nt", "scheduleEnabled", ""), 1, "an enabled schedule is reported");
+is(ReadingsVal("nt", "scheduledCleanings", ""), 1, "a filled slot is counted");
+
+# the colon lines carry no setting and must not create readings
+NeatoLocal_ParseUserSettings($h, { cmd => "GetUserSettings" },
+    "Current Dirt Bin Runtime is: 42\r\n");
+is(ReadingsVal("nt", "language", ""), "EL_NONE", "an unrelated line changes nothing");
+
+# --- setting a user setting reads it back ------------------------------------
+$h->{STATE} = "opened";
+$h->{helper}{pending} = { cmd => "busy" };
+$h->{helper}{queue} = [];
+
+NeatoLocal_Set($h, "nt", "ecoMode", "ON");
+is($h->{helper}{queue}[0]{cmd}, "SetUserSettings EcoMode ON", "eco mode is set on the robot");
+is($h->{helper}{queue}[1]{cmd}, "GetUserSettings", "and read back afterwards");
+
+$h->{helper}{queue} = [];
+like(NeatoLocal_Set($h, "nt", "intenseClean", "vielleicht"), qr/usage/,
+     "only on and off are accepted");
+is(scalar(@{$h->{helper}{queue}}), 0, "and nothing is sent for a bad argument");
+
+$h->{helper}{queue} = [];
+delete $h->{helper}{pending};
 
 # --- the navigation mode -----------------------------------------------------
 # The console offers no way to read it back, so the reading holds what FHEM set
