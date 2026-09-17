@@ -80,7 +80,11 @@ Damit sind die drei zuvor offenen Aktionen belegt:
 
 ### Weitere nützliche Kommandos
 
-* `SetNavigationMode Normal|Gentle|Deep|Quick` – Reinigungsmodus
+* `SetNavigationMode Normal|Gentle|Deep|Quick` – Reinigungsmodus. **Nicht
+  auslesbar**: ein `GetNavigationMode` gibt es nicht, und der Roboter behält den
+  Modus nicht über Läufe hinweg. Er muss deshalb vor jeder Hausreinigung erneut
+  gesendet werden. Das Reading `navigationMode` spiegelt daher den zuletzt von
+  FHEM gesetzten Wert, nicht den Zustand des Geräts.
 * `SetTime Day <0-6> Hour <0-23> Min <0-59> [Sec <0-59>]` – Zeitgeber stellen.
   Ohne Cloud bleibt die Uhr des Roboters sonst stehen; `set <dev> syncTime`
   überträgt die FHEM-Zeit.

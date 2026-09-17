@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.3.0";
+my $NeatoLocal_VERSION = "0.4.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1011,6 +1011,14 @@ sub NeatoLocal_Set($@) {
         $hash->{helper}{assumeCleaning} = 1;
         NeatoLocal_UpdateState($hash);
 
+        # The robot does not keep the navigation mode across runs, so it has to
+        # be set again right before the run it should apply to.
+        my $navMode = ReadingsVal($name, "navigationMode", "");
+        NeatoLocal_Enqueue($hash, "SetNavigationMode $navMode",
+                           \&NeatoLocal_ParseGeneric)
+            if ($navMode ne "" && $mode eq "house"
+                && grep { $_ eq $navMode } @NeatoLocal_navModes);
+
         NeatoLocal_Enqueue($hash, $serialCmd, \&NeatoLocal_ParseGeneric);
         NeatoLocal_Enqueue($hash, "GetErr", \&NeatoLocal_ParseErr);
         return undef;
@@ -1027,6 +1035,13 @@ sub NeatoLocal_Set($@) {
         return "usage: set $name navigationMode <"
              . join("|", @NeatoLocal_navModes) . ">"
             if (!grep { $_ eq $mode } @NeatoLocal_navModes);
+
+        # The console has no GetNavigationMode, so the robot can never tell us
+        # which mode is active. The reading is therefore what FHEM last set --
+        # it survives a restart in the statefile and is re-applied before every
+        # house cleaning, which is how the mode actually takes effect.
+        readingsSingleUpdate($hash, "navigationMode", $mode, 1);
+
         return NeatoLocal_Enqueue($hash, "SetNavigationMode $mode",
                                   \&NeatoLocal_ParseGeneric);
     }
@@ -1209,7 +1224,11 @@ sub NeatoLocal_LeaveTestMode($) {
         way to do this at all.</li>
     <li><b>findMe</b> - plays the "Find me" sound on the robot</li>
     <li><b>clearError</b> - dismisses the reported error (GetErr Clear)</li>
-    <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - cleaning mode</li>
+    <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - cleaning mode.
+        The console has no command to read it back, so the reading of the same
+        name is what FHEM last set, not what the robot reports. It is re-sent
+        before every house cleaning, because the robot does not keep the mode
+        across runs.</li>
     <li><b>syncTime</b> - sets the robot's scheduler clock from FHEM. Without
         the cloud nothing else keeps that clock right.</li>
     <li><b>button &lt;name&gt;</b> - simulates any UI or IR button press</li>
@@ -1338,7 +1357,11 @@ sub NeatoLocal_LeaveTestMode($) {
         den dokumentierten Kommandos ist das gar nicht moeglich.</li>
     <li><b>findMe</b> - spielt den Ton "Find me" ab</li>
     <li><b>clearError</b> - quittiert den gemeldeten Fehler (GetErr Clear)</li>
-    <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - Reinigungsmodus</li>
+    <li><b>navigationMode &lt;Normal|Gentle|Deep|Quick&gt;</b> - Reinigungsmodus.
+        Die Konsole kennt kein Kommando, ihn auszulesen; das gleichnamige
+        Reading ist deshalb das, was FHEM zuletzt gesetzt hat, nicht die
+        Auskunft des Roboters. Es wird vor jeder Hausreinigung erneut gesendet,
+        weil der Roboter den Modus nicht ueber Laeufe hinweg behaelt.</li>
     <li><b>syncTime</b> - stellt die Uhr des Zeitgebers aus FHEM. Ohne Cloud
         haelt sonst nichts mehr diese Uhr richtig.</li>
     <li><b>button &lt;name&gt;</b> - simuliert einen beliebigen Tastendruck</li>

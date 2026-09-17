@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 84;
+use Test::More tests => 90;
 
 package main;
 
@@ -269,6 +269,37 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "and the state follows the robo
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_STARTHOUSECLEANING",
    "an unparseable answer leaves the last state alone");
+
+# --- the navigation mode -----------------------------------------------------
+# The console offers no way to read it back, so the reading holds what FHEM set
+# and has to be re-applied before each house cleaning.
+$h->{STATE} = "opened";
+# a command already in flight keeps the queue from draining while we inspect it
+$h->{helper}{pending} = { cmd => "busy" };
+$h->{helper}{queue} = [];
+
+NeatoLocal_Set($h, "nt", "navigationMode", "deep");
+is(ReadingsVal("nt", "navigationMode", ""), "Deep", "the mode is remembered as a reading");
+
+$h->{helper}{queue} = [];
+NeatoLocal_Set($h, "nt", "startCleaning");
+is($h->{helper}{queue}[0]{cmd}, "SetNavigationMode Deep",
+   "a house cleaning re-applies the mode first");
+like($h->{helper}{queue}[1]{cmd}, qr/START_HOUSE_CLEANING|Clean House/,
+     "and only then starts the run");
+
+# a spot clean is not a house clean
+$h->{helper}{queue} = [];
+NeatoLocal_Set($h, "nt", "startCleaning", "spot");
+unlike($h->{helper}{queue}[0]{cmd}, qr/SetNavigationMode/,
+       "a spot clean does not carry the house mode");
+
+like(NeatoLocal_Set($h, "nt", "navigationMode", "bogus"), qr/usage/,
+     "an unknown mode is rejected");
+is(ReadingsVal("nt", "navigationMode", ""), "Deep", "and does not overwrite the stored one");
+
+$h->{helper}{queue} = [];
+delete $h->{helper}{pending};
 
 # --- a silent robot must not flood the log or pile up the queue -------------
 # This is the state of things while the bridge is wired up but the robot is not

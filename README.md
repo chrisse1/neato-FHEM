@@ -110,7 +110,7 @@ set Staubsauger pause                      # bzw. resume
 set Staubsauger sendToBase
 set Staubsauger findMe
 set Staubsauger clearError
-set Staubsauger navigationMode Deep
+set Staubsauger navigationMode Deep       # Normal|Gentle|Deep|Quick
 set Staubsauger syncTime                   # Uhr des Roboters stellen
 set Staubsauger statusRequest
 
@@ -124,6 +124,12 @@ Readings: `state`
 `batteryPercent`, `isCharging`, `isDocked`, `isCleaning`, `vacuumRPM`,
 `error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `uiState`,
 `robotState`, `commandApi`, `model`, `serialNumber`, `firmware`, `ldsSoftware`.
+
+Der **Reinigungsmodus** steht im Reading `navigationMode` – mit einer
+Einschränkung: die Konsole kennt kein Kommando, ihn auszulesen. Das Reading ist
+also das, was FHEM zuletzt gesetzt hat, nicht die Auskunft des Roboters. Weil
+der Roboter den Modus nicht über Läufe hinweg behält, schickt das Modul ihn vor
+jeder Hausreinigung erneut – genauso löst es OpenNeato.
 
 `state` kennt zusätzlich `paused` und `docking`, weil `GetState` – ebenfalls
 undokumentiert – den Zustand liefert, den der Roboter selbst kennt. Das ersetzt
