@@ -60,6 +60,7 @@
   #include <ArduinoOTA.h>
   #include <Preferences.h>
   #include <esp_wifi.h>         // esp_wifi_set_country_code()
+  #include <esp_system.h>       // esp_reset_reason()
   #define ROBOT Serial1         // dedicated UART, USB CDC stays free
   #define HAVE_CONFIG_STORE 1   // credentials live in NVS, not in this file
 #else
@@ -93,7 +94,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.12.0";
+static const char *VERSION = "0.12.1";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -335,6 +336,29 @@ static void applyRegulatoryDomain() {
 // board whose antenna barely reaches the router, both look exactly like a
 // wrong password from the outside -- the scan tells them apart.
 //
+// Why the board started. "Was it up at all?" is the first question when
+// something is reachable and then is not, and a reset triggered from the USB
+// host looks nothing like a brownout or a crash -- but all three end with a
+// board that went away for a moment.
+static String bootReason() {
+#if defined(ARDUINO_ARCH_ESP8266)
+  return ESP.getResetReason();
+#else
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return F("power on");
+    case ESP_RST_EXT:       return F("external reset");
+    case ESP_RST_SW:        return F("software restart");
+    case ESP_RST_PANIC:     return F("crash");
+    case ESP_RST_INT_WDT:   return F("interrupt watchdog");
+    case ESP_RST_TASK_WDT:  return F("task watchdog");
+    case ESP_RST_WDT:       return F("watchdog");
+    case ESP_RST_DEEPSLEEP: return F("deep sleep");
+    case ESP_RST_BROWNOUT:  return F("brownout -- the supply dipped");
+    default:                return String(F("code ")) + (int)esp_reset_reason();
+  }
+#endif
+}
+
 // The SDKs number the modes differently, so the board resolves them rather
 // than leaving a number for somebody else to look up wrongly.
 static const __FlashStringHelper *encryptionName(int index) {
@@ -646,6 +670,7 @@ static void consoleHandle(const String &line) {
     Serial.print(F("bytes from robot ")); Serial.println(bytesFromRobot);
     Serial.print(F("link drops ")); Serial.println(linkDrops);
     Serial.print(F("uptime s ")); Serial.println(millis() / 1000);
+    Serial.print(F("boot ")); Serial.println(bootReason());
     return;
   }
 
@@ -986,6 +1011,7 @@ void setup() {
 
   dbg("");
   dbg(String(F("neato_bridge ")) + VERSION);
+  dbg(String(F("boot: ")) + bootReason());
 
   setupWifi();
 

@@ -187,3 +187,35 @@ arduino-cli compile \
   --build-property 'compiler.cpp.extra_flags=-DWIFI_SSID="MeinWLAN" -DWIFI_PSK="geheim"' \
   firmware/neato_bridge
 ```
+
+## Wenn der Server dem Board dazwischenfunkt
+
+Am USB eines Linux-Servers hat das Board Gesellschaft: Jeder Prozess, der
+`/dev/ttyACM*` öffnet, kann den C3 zurücksetzen. `ModemManager` tut genau das –
+er probiert neue ttyACM-Geräte mit AT-Kommandos an. Ein Board, das sich
+verbindet und kurz darauf wieder verschwindet, sieht danach aus.
+
+Nachsehen, ob er läuft:
+
+```sh
+systemctl status ModemManager
+```
+
+Das Board von ihm ausnehmen, statt den Dienst abzuschalten – die Kennung
+stammt aus `lsusb` (Espressif mit nativem USB meldet sich als `303a:1001`):
+
+```
+# /etc/udev/rules.d/99-neato-bridge.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", ENV{ID_MM_DEVICE_IGNORE}="1"
+```
+
+```sh
+sudo udevadm control --reload-rules
+```
+
+Ob das Board tatsächlich neu gestartet ist, sagt es selbst: `info` nennt
+`uptime s` und `boot`. Steigt die Laufzeit durch und steht `link drops` auf 0,
+hat es nie ausgesetzt – dann liegt der Ausfall woanders. Springt die Laufzeit
+zurück, hat es neu gestartet, und `boot` nennt den Grund: `external reset` und
+`software restart` kommen von außen, `brownout` von der Stromversorgung, `crash`
+von der Firmware.
