@@ -93,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.9.0";
+static const char *VERSION = "0.9.1";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -132,6 +132,10 @@ static bool apMode = false;     // no credentials: running as an access point
 // number that separates "wrong password" from "network not found" -- from the
 // outside both look like a board that simply does not turn up.
 static volatile int lastDisconnectReason = 0;
+// Taking the station side down for a scan raises a disconnect event too. That
+// one says something about this sketch, not about the router, so it must not
+// overwrite the reason the diagnosis rests on.
+static volatile bool ignoreDisconnects = false;
 #if defined(ARDUINO_ARCH_ESP8266)
 static WiFiEventHandler disconnectHandler;
 #endif
@@ -297,11 +301,15 @@ static void watchDisconnects() {
 #if defined(ARDUINO_ARCH_ESP8266)
   disconnectHandler = WiFi.onStationModeDisconnected(
       [](const WiFiEventStationModeDisconnected &event) {
-        lastDisconnectReason = (int)event.reason;
+        if (!ignoreDisconnects) {
+          lastDisconnectReason = (int)event.reason;
+        }
       });
 #else
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    lastDisconnectReason = (int)info.wifi_sta_disconnected.reason;
+    if (!ignoreDisconnects) {
+      lastDisconnectReason = (int)info.wifi_sta_disconnected.reason;
+    }
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 #endif
 }
@@ -347,6 +355,7 @@ static void scanNetworks() {
   bool resume = wifiSsid.length() > 0;
   bool hadAccessPoint = apMode;
 
+  ignoreDisconnects = true;
   WiFi.mode(WIFI_STA);          // drops the soft AP if one was running
   applyRegulatoryDomain();
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -417,6 +426,7 @@ static void scanNetworks() {
     }
   }
   WiFi.scanDelete();
+  ignoreDisconnects = false;
 
   if (hadAccessPoint) {
     startAccessPoint(true, false);   // back the way it was, without the banner
@@ -591,10 +601,15 @@ static void consoleHandle(const String &line) {
     }
     if (rest.equalsIgnoreCase("status")) {
       Serial.print(F("ssid ")); Serial.println(wifiSsid);
-      Serial.print(F("psk ")); Serial.println(wifiPsk.length() ? F("set") : F("empty"));
+      // The length, not the password: enough to see whether something ate a
+      // character on the way here, and it gives nothing away that the person
+      // at this console does not already have.
+      Serial.print(F("psk ")); Serial.print((int)wifiPsk.length());
+      Serial.println(F(" characters"));
       Serial.print(F("stored ")); Serial.println(configVerify(wifiSsid, wifiPsk) ? 1 : 0);
       Serial.print(F("connected ")); Serial.println(WiFi.status() == WL_CONNECTED ? 1 : 0);
       Serial.print(F("rssi ")); Serial.println(WiFi.RSSI());
+      Serial.print(F("mac ")); Serial.println(WiFi.macAddress());
       printDisconnectReason();
       return;
     }

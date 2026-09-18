@@ -229,7 +229,9 @@ Zugangsdaten anschließend über denselben USB-Port an die
 Konfigurationskonsole der Firmware und meldet die Adresse, unter der die
 Brücke dann erreichbar ist, im Reading `bridgeAddress`. Enthalten Name oder
 Passwort Leerzeichen, gehören sie in Anführungszeichen:
-`set Staubsauger wifiESP "Mein WLAN" "lange Passphrase"`.
+`set Staubsauger wifiESP "Mein WLAN" "lange Passphrase"`. Ohne Leerzeichen
+gehen sie auch ohne Anführungszeichen; enthalten sie ein Semikolon, muss es als
+`;;` geschrieben werden, weil FHEM daran Befehle trennt.
 
 Beides läuft in einem eigenen Prozess, FHEM bleibt also bedienbar. Das Ergebnis
 steht im Reading `lastFlash`.
@@ -253,7 +255,11 @@ Heimnetz, fragt es `wifi status` und `wifi scan` ab und stellt die Ursache in
 
 Maßgeblich ist dabei der Trennungsgrund, den das Board vom Verbindungsversuch
 selbst mitbringt: 15 oder 204 heißt Passwort abgelehnt, 201 heißt Netz nicht
-gefunden. Die Scan-Liste steht nur daneben, mit Pegel und Kanal zu jedem Netz –
+gefunden, 202 und 203 heißen vom Router abgewiesen. Grund 2 ist ausdrücklich
+mehrdeutig – dieselbe Meldung schickt ein Router auch bei MAC-Filter oder
+vollem Client-Limit – und wird deshalb nicht dem Passwort angelastet. Die
+Meldung nennt dann die MAC des Boards, also das, wonach in der Geräteliste des
+Routers zu suchen ist, und die Zeichenzahl des angekommenen Passworts. Die Scan-Liste steht nur daneben, mit Pegel und Kanal zu jedem Netz –
 sie ist ein Indiz, kein Beweis, denn ein Scan kann unvollständig sein.
 
 Die Firmware stellt die Funk-Länderkennung dabei auf `DE` (Kanäle 1–13). Ohne

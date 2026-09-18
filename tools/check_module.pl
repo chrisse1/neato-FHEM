@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 196;
+use Test::More tests => 202;
 
 package main;
 
@@ -733,12 +733,15 @@ like($verdict, qr/did not answer/, "no answer at all is its own case");
 # --- the reason code outranks the scan --------------------------------------
 # The board's own disconnect reason comes from the association attempt; the
 # scan is circumstantial. A partial scan must not overrule it.
-my $status_pw  = "ssid WaxWeazle\npsk set\nstored 1\nconnected 0\nrssi -100\nreason 15 password refused (4-way handshake timed out)\n";
+my $status_pw  = "ssid WaxWeazle\npsk 16 characters\nstored 1\nconnected 0\nrssi -100\nmac 84:CC:A8:11:22:33\nreason 15 password refused (4-way handshake timed out)\n";
 my $status_gone = "ssid WaxWeazle\npsk set\nstored 1\nconnected 0\nrssi -100\nreason 201 network not found\n";
 my $status_none = "ssid WaxWeazle\npsk set\nstored 1\nconnected 0\nrssi -100\nreason 0\n";
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, $status_pw);
 like($verdict, qr/refused the password/, "reason 15 names the password");
+like($verdict, qr/received a 16 character password/,
+     "and reports the length that arrived, so a mangled one can be counted");
+like($verdict, qr/MAC 84:CC:A8:11:22:33/, "and the MAC the router would list");
 unlike($verdict, qr/not on the air/,
        "even though the scan missed the network, the reason code wins");
 
@@ -747,6 +750,15 @@ like($verdict, qr/did not find 'WaxWeazle'/, "reason 201 names a missing network
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, "ssid x\nreason 203 association refused\n");
 like($verdict, qr/reason 203: association refused/, "another code is named, not guessed at");
+like($verdict, qr/declining the client/, "and placed at the router, not the password");
+
+# Reason 2 is "previous authentication no longer valid" -- ambiguous, and the
+# one that sent this search after a password that was already correct.
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing,
+                                  "ssid x\npsk 16 characters\nmac 84:CC:A8:11:22:33\nreason 2\n");
+like($verdict, qr/not proof of a wrong password/, "reason 2 does not accuse the password");
+like($verdict, qr/MAC filter/, "and names what else produces it");
+unlike($verdict, qr/refused the password/, "it is not reported as a refusal either");
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, "ssid x\nreason 77\n");
 like($verdict, qr/reason 77: unknown/, "an unknown code keeps its number");

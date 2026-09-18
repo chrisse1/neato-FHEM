@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.4";
+my $NeatoLocal_VERSION = "0.11.5";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1633,16 +1633,42 @@ sub NeatoLocal_ScanVerdict($$;$) {
     # it comes from the association attempt itself.
     my ($reason) = ($status =~ m/^reason\s+(\d+)/m);
     if (defined($reason) && $reason > 0) {
-        return "the network refused the password ('$ssid' answered, reason "
-             . "$reason).$list"
-            if ($reason == 15 || $reason == 204 || $reason == 202 || $reason == 2);
+        my ($mac) = ($status =~ m/^mac\s+(\S+)/m);
+        my ($len) = ($status =~ m/^psk\s+(\d+) characters/m);
+
+        # What the board received, so a password mangled on the way here can be
+        # spotted by counting rather than by trying again.
+        my $got = defined($len)
+                ? " The board received a $len character password"
+                  . (defined($mac) ? " and reports MAC $mac." : ".")
+                : (defined($mac) ? " The board's MAC is $mac." : "");
+
+        # Only the handshake codes actually accuse the password. Reason 2 is
+        # "previous authentication no longer valid", which a router also sends
+        # when it declines a client for its own reasons -- saying "wrong
+        # password" there sends people to check what is already correct.
+        return "'$ssid' refused the password (reason $reason, the handshake "
+             . "timed out).$got$list"
+            if ($reason == 15 || $reason == 204);
+
+        return "'$ssid' broke off the authentication (reason 2). This is not "
+             . "proof of a wrong password: a router sends the same when it "
+             . "declines a client -- MAC filter, client limit, or a band it "
+             . "steers away from. Check whether the router admits this board."
+             . "$got$list"
+            if ($reason == 2);
+
+        return "'$ssid' turned the board away (reason $reason: "
+             . NeatoLocal_ReasonText($reason) . "). That is the router "
+             . "declining the client, not the name or the password.$got$list"
+            if ($reason == 202 || $reason == 203);
 
         return "the board did not find '$ssid' on the air (reason $reason). "
              . "Check the name, and that the 2.4 GHz band carries it.$list"
             if ($reason == 201);
 
         return "the board could not join '$ssid' (reason $reason: "
-             . NeatoLocal_ReasonText($reason) . ").$list";
+             . NeatoLocal_ReasonText($reason) . ").$got$list";
     }
 
     return "the name '$ssid' is not on the air on 2.4 GHz where the board is, "
