@@ -1,54 +1,68 @@
 # neato-FHEM
 
-FHEM-Modul zur **lokalen** Steuerung von Neato-Botvac-Saugrobotern – ohne Cloud.
+FHEM-Modul zur lokalen Steuerung von Neato-Botvac-Saugrobotern – ohne Cloud.
 
 Die Neato-Cloud wurde im 4. Quartal 2025 abgeschaltet. Damit sind die App und
-alle cloudbasierten Anbindungen (u. a. das FHEM-Modul `74_BOTVAC.pm`) tot.
-Der Roboter selbst ist es nicht: Navigation, SLAM, Reinigung und Andocken
-laufen komplett in seiner Firmware. Es fehlt nur der *Auslöser*, der bisher aus
-der Cloud kam.
+alle cloudbasierten Anbindungen tot, darunter das bisherige FHEM-Modul
+`74_BOTVAC.pm`. Der Roboter selbst ist es nicht: Navigation, SLAM, Reinigung
+und Andocken laufen vollständig in seiner Firmware. Es fehlt nur der Auslöser,
+der bisher aus der Cloud kam.
 
-Dieses Projekt ersetzt den Auslöser – nicht die Firmware. Der Roboter hat eine
-eingebaute serielle Konsole, über die sich Reinigung starten/stoppen und Akku-,
-Lade- und Fehlerstatus auslesen lassen. Genau daran hängt sich `74_NeatoLocal.pm`.
-
-## Warum keine echte Custom Firmware?
-
-Die Botvacs sind kein Linux-Gerät wie die Roborocks, bei denen Valetudo ansetzt,
-sondern ein RTOS auf einem Cortex-M. Eine eigene Firmware hieße: Lidar-Treiber,
-SLAM, Pfadplanung, Wandverfolgung, Andocken und Motorregelung neu schreiben –
-für ein Ergebnis, das schlechter wäre als das, was bereits im Roboter steckt.
-Der serielle Weg liefert 90 % des Nutzens für 1 % des Aufwands.
+`74_NeatoLocal.pm` ersetzt diesen Auslöser. Es spricht die serielle Konsole an,
+die in jedem Botvac steckt, und macht daraus ein FHEM-Gerät mit `set`, `get`
+und Readings.
 
 ## Unterstützte Modelle
 
 | Modell | Status |
 |---|---|
-| Botvac Connected, D3, D4, D5, D6, D7 | unterstützt (interner Debug-Port + USB) |
-| Botvac 65/70e/75/80/85, D75/D80/D85, XV | unterstützt (Kartenrand-Stecker P7/P25 + USB) |
-| Botvac D8, D9, D10 | **nicht** unterstützt – anderes Board, serieller Port ist passwortgeschützt |
+| Botvac Connected, D3, D4, D5, D6, D7 | unterstützt, interner Debug-Port oder USB |
+| Botvac 65/70e/75/80/85, D75/D80/D85, XV | unterstützt, Kartenrand-Stecker P7/P25 oder USB |
+| Botvac D8, D9, D10 | **nicht** unterstützt: anderes Board, serieller Port ist passwortgeschützt |
+
+Entwickelt und geprüft an einem **BotVac D6 Connected mit Software 4.5.3.189**.
+Der vollständige Mitschnitt seiner Konsole liegt in
+[`docs/reference-dump-botvac-d6.txt`](docs/reference-dump-botvac-d6.txt) und
+dient den Tests als Grundlage.
 
 ## Anbindung
 
 Drei Transportwege, alle vom selben Modul bedient:
 
-| Transport | Define | Einsatz |
+| Transport | Angabe im `define` | Einsatz |
 |---|---|---|
-| USB / seriell | `/dev/ttyACM0@115200` | Test und Entwicklung, Roboter hängt am Kabel |
-| TCP | `192.168.1.42:23` | ESP-WLAN-Brücke (botvac-wifi) oder `ser2net` |
+| seriell | `/dev/ttyACM0@115200` | USB-Port des Roboters, gut zum Erkunden |
+| TCP | `192.168.1.42:23` | WLAN-Brücke im Roboter |
 | HTTP | `http://neato.local` | [OpenNeato](https://github.com/renjfk/OpenNeato) auf einem ESP32-C3 |
 
-Für die TCP-Variante liegt in [`firmware/`](firmware/) eine passende Brücken-Firmware
-(`neato_bridge.ino`) – ein Sketch für ESP32-C3 und ESP8266.
+Für die TCP-Variante liegt in [`firmware/`](firmware/) eine passende
+Brücken-Firmware: ein Sketch für ESP32-C3 und ESP8266, der im Roboter verbaut
+wird und dessen Konsole ins Netz bringt. Verdrahtung, Stromversorgung und eine
+Schritt-für-Schritt-Flash-Anleitung stehen in
+[docs/hardware.md](docs/hardware.md) und
+[docs/flashing-esp32c3.md](docs/flashing-esp32c3.md).
 
-**Wichtig:** Über USB verweigert der Roboter die Reinigung mit Fehler
-`220 – Please put my Dirt Bin back in.` bzw. „unplug USB before cleaning“.
-USB ist zum Erkunden und Entwickeln gut, für den Dauerbetrieb gehört die
-Anbindung an den internen Debug-Port. Details in [docs/hardware.md](docs/hardware.md).
+**Hinweis zu USB:** Manche Firmware verweigert die Reinigung, solange ein
+USB-Host angesteckt ist (Fehler 220). Für den Dauerbetrieb ist die Anbindung
+an den internen Debug-Port vorgesehen; USB eignet sich zum Erkunden und für
+die Diagnose.
 
 ## Installation
 
-Auf der Kommandozeile des FHEM-Rechners:
+### Über den FHEM-Updatemechanismus
+
+```
+update add https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt
+update
+shutdown restart
+```
+
+Danach genügt ein `update`, um auf den neuesten Stand zu kommen; `update check`
+zeigt vorher, was sich ändern würde. `update delete <url>` entfernt die Quelle
+wieder. FHEM schreibt dabei direkt nach `/opt/fhem/FHEM/`, der Benutzer, unter
+dem FHEM läuft, braucht dort Schreibrecht.
+
+### Von Hand
 
 ```sh
 sudo cp 74_NeatoLocal.pm /opt/fhem/FHEM/
@@ -60,22 +74,22 @@ Dann in der FHEM-Kommandozeile:
 
 ```
 reload 74_NeatoLocal.pm
-define Staubsauger NeatoLocal /dev/ttyACM0@115200
+define Staubsauger NeatoLocal 192.168.1.42:23
 attr Staubsauger interval 60
 save
 ```
 
-`reload` ist nicht optional: FHEM liest das Verzeichnis `FHEM/` beim Start
-ein. Eine danach hinzugekommene Datei kennt es nicht, und `define` scheitert
-mit *Cannot load module NeatoLocal*. Ein FHEM-Neustart tut es genauso.
-Und ohne `save` ist die Definition nach dem nächsten Neustart wieder weg.
+`reload` ist nicht optional: FHEM liest das Verzeichnis `FHEM/` beim Start ein
+und kennt eine danach hinzugekommene Datei nicht – `define` scheitert sonst mit
+*Cannot load module NeatoLocal*. Ein FHEM-Neustart tut es genauso. Ohne `save`
+ist die Definition nach dem nächsten Neustart wieder weg.
 
 ### Rechte am seriellen Port
 
-Der Punkt, an dem es gern klemmt: **die Rechte an der Moduldatei haben nichts
-mit dem Zugriff auf `/dev/ttyACM0` zu tun.** Der Port gehört üblicherweise
-`root:dialout`, also muss der Benutzer, unter dem FHEM läuft, in der Gruppe
-`dialout` sein:
+Nur für den seriellen Weg nötig, bei der WLAN-Brücke entfällt er. Die Rechte an
+der Moduldatei haben nichts mit dem Zugriff auf `/dev/ttyACM0` zu tun: der Port
+gehört üblicherweise `root:dialout`, also muss der Benutzer, unter dem FHEM
+läuft, in dieser Gruppe sein.
 
 ```sh
 id fhem                          # steht dialout dabei?
@@ -83,171 +97,193 @@ sudo usermod -aG dialout fhem    # falls nicht
 sudo systemctl restart fhem      # Gruppenwechsel wirkt erst nach Neustart
 ```
 
-Beim Weg über die WLAN-Brücke (`define ... <ip>:23`) entfällt das komplett –
-dort spricht FHEM nur über das Netz.
+Es kann immer nur ein Prozess den Port offen haben – ein laufendes
+`dump_robot.py` blockiert FHEM und umgekehrt.
 
-Außerdem: Es kann immer nur ein Prozess den Port offen haben. Ein noch
-laufendes `dump_robot.py` blockiert FHEM und umgekehrt.
+## set
 
-### Über den FHEM-Updatemechanismus
+| Kommando | Wirkung |
+|---|---|
+| `startCleaning [house\|spot\|explore\|persistent]` | Hausreinigung (Vorgabe), Spot-Reinigung, Erkundungsfahrt zum Kartenaufbau, Reinigung auf der gespeicherten Karte |
+| `stop` | Reinigung beenden |
+| `pause` / `resume` | Reinigung unterbrechen und fortsetzen |
+| `sendToBase` | zurück zur Basis |
+| `findMe` | Tonsignal zum Auffinden |
+| `clearError` | gemeldeten Fehler quittieren |
+| `navigationMode Normal\|Gentle\|Deep\|Quick` | Reinigungsmodus |
+| `ecoMode on\|off` | leiser, geringere Saugleistung |
+| `intenseClean on\|off` | Intensivreinigung |
+| `binFullDetect on\|off` | Erkennung des vollen Staubbehälters |
+| `syncTime` | Uhr des Zeitgebers im Roboter aus FHEM stellen |
+| `button <name>` | beliebigen Tastendruck simulieren |
+| `statusRequest` | Zustand sofort abfragen |
+| `reconnect` | Verbindung neu aufbauen |
+| `testMode on\|off` | Diagnosemodus der Konsole, siehe unten |
+| `raw <Kommando>` | beliebiges Konsolenkommando senden |
 
-Der bequemste Weg, wenn du Aktualisierungen mitnehmen willst. In der
-FHEM-Kommandozeile:
+**`testMode`** schaltet den Roboter in den Diagnosemodus. Dort reagiert er
+weder auf seine Tasten noch reinigt er. Das Modul aktiviert ihn nie von selbst
+und sendet bei Shutdown, Löschen und `disable` immer `TestMode Off`.
 
-```
-update add https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt
-update
-shutdown restart
-```
+## get
 
-Danach genügt ein `update`, um auf den neuesten Stand zu kommen; `update check`
-zeigt vorher, was sich ändern würde. Entfernen lässt sich die Quelle mit
-`update delete https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/controls_neatolocal.txt`.
+| Abfrage | Inhalt |
+|---|---|
+| `help [Kommando]` | Kommandoliste des Roboters bzw. Hilfe zu einem Kommando |
+| `version` | Modell, Seriennummer, Firmware |
+| `state` | Zustand laut Roboter |
+| `charger` | Akku- und Ladewerte |
+| `battery` | Messwerte der Smart Battery |
+| `warranty` | Lebensdauerzähler |
+| `settings` | Benutzereinstellungen |
+| `motors`, `sensors`, `usage`, `wifiStatus` | Rohdaten |
+| `raw <Kommando>` | beliebiges Konsolenkommando |
 
-Der Weg ist geprüft: Indexdatei und Modul sind anonym abrufbar, die im Index
-vermerkte Größe stimmt mit der ausgelieferten Datei überein, und die
-Testsuite läuft gegen die heruntergeladene Datei durch.
+## Readings
 
-Falls du das Repository forkst und privat hältst: FHEM kann sich bei GitHub
-nicht anmelden, private Repositories antworten anonym mit 404, und `update`
-scheitert dann, ohne den Grund zu nennen. Dort bleibt nur der Weg über `cp`.
+### Zustand
 
-FHEM schreibt beim Update direkt nach `/opt/fhem/FHEM/` – der Benutzer, unter
-dem FHEM läuft, braucht dort Schreibrecht.
+`state` kennt `cleaning`, `paused`, `suspended`, `docking`, `charging`,
+`docked`, `idle`, `error`, `unreachable` und `disconnected`.
 
-Die Indexdatei `controls_neatolocal.txt` hält Größe und Zeitstempel jedes
-Moduls; nur wenn die sich ändern, bietet FHEM ein Update an. Sie wird bei jedem
-Push nach `main`, der `FHEM/` berührt, automatisch von der CI erneuert – von
-Hand ginge `tools/make_controls.sh`.
+* **`suspended`** – der Roboter hat die Reinigung selbst unterbrochen, in aller
+  Regel wegen leerem Akku, und will sie nach dem Laden fortsetzen. Steht dabei
+  `isDocked 0`, hat er die Basis nicht mehr erreicht.
+* **`unreachable`** – die Verbindung steht, aber der Roboter antwortet nicht:
+  er schläft, oder die Brücke ist nicht mit ihm verdrahtet. Die Abfrage geht
+  dann schrittweise bis auf das 16-fache Intervall zurück, höchstens eine
+  Stunde, statt Zeitüberschreitungen ins Log zu schreiben. Die erste Antwort
+  setzt alles zurück.
 
-## Verwendung
+`uiState` und `robotState` geben den Zustand unverändert so wieder, wie der
+Roboter ihn meldet.
 
-```
-set Staubsauger startCleaning              # Haus reinigen
-set Staubsauger startCleaning spot         # Spot-Reinigung
-set Staubsauger startCleaning explore      # Erkundungsfahrt (Karte aufbauen)
-set Staubsauger startCleaning persistent   # Reinigung auf gespeicherter Karte
-set Staubsauger stop
-set Staubsauger pause                      # bzw. resume
-set Staubsauger sendToBase
-set Staubsauger findMe
-set Staubsauger clearError
-set Staubsauger navigationMode Deep       # Normal|Gentle|Deep|Quick
-set Staubsauger ecoMode on                # leiser, weniger Saugleistung
-set Staubsauger intenseClean off
-set Staubsauger binFullDetect on
-set Staubsauger syncTime                   # Uhr des Roboters stellen
-set Staubsauger statusRequest
+### Akku
 
-get Staubsauger help                  # Kommandoliste des eigenen Roboters
-get Staubsauger help Clean            # Syntax des Clean-Kommandos
-get Staubsauger raw GetCharger
-```
+| Reading | Bedeutung |
+|---|---|
+| `batteryPercent` | Ladestand in Prozent |
+| `batteryHealth` | Restkapazität in Prozent der Nennkapazität |
+| `batteryCapacityFull`, `batteryCapacityDesign` | aktuelle und ursprüngliche Kapazität in mAh |
+| `batteryCycles`, `cleaningHours` | Lebensdauerzähler |
+| `batteryVoltage`, `batteryTemperature`, `batteryState` | Spannung, Temperatur, ok/low |
+| `isCharging`, `isDocked` | Lade- und Dockzustand |
 
-Readings: `state`
-(`cleaning`/`charging`/`docked`/`idle`/`error`/`unreachable`/`disconnected`),
-`batteryPercent`, `isCharging`, `isDocked`, `isCleaning`, `vacuumRPM`,
-`error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `uiState`,
-`robotState`, `commandApi`, `model`, `serialNumber`, `firmware`, `ldsSoftware`.
-
-**`batteryHealth`** ist das Reading, das Ärger vorhersagt: die Restkapazität
-des Akkus in Prozent seiner Nennkapazität, gemessen von der Elektronik im Akku
-selbst. Dazu `batteryCapacityFull`, `batteryCapacityDesign`,
-`batteryTemperature`, `batteryCycles` und `cleaningHours`.
-
-Unterhalb von etwa 50 % schafft es ein Roboter zunehmend nicht mehr zurück zur
-Basis – er bleibt unterwegs stehen, obwohl die Ladeanzeige eben noch brauchbar
-aussah. Eine Warnung dafür ist ein Dreizeiler:
-
-```
-define di_akku DOIF ([Staubsauger:batteryHealth] < 50) (set Nachricht ...)
-```
-
-Aus `GetUserSettings` kommen zusätzlich `ecoMode`, `intenseClean`,
-`binFullDetect`, `wallFollower`, `clickSounds`, `melodySounds`,
-`warningSounds`, `led`, `wifiEnabled`, `language`, `filterChangeTime`,
-`brushChangeTime`, `dirtBinInterval`, `scheduleEnabled` und
-`scheduledCleanings`. Die werden beim Verbinden und nach jeder Änderung
-gelesen – diese Readings stammen also wirklich vom Gerät.
-
-Der **Reinigungsmodus** steht im Reading `navigationMode` – mit einer
-Einschränkung: die Konsole kennt kein Kommando, ihn auszulesen. Das Reading ist
-also das, was FHEM zuletzt gesetzt hat, nicht die Auskunft des Roboters. Weil
-der Roboter den Modus nicht über Läufe hinweg behält, schickt das Modul ihn vor
-jeder Hausreinigung erneut – genauso löst es OpenNeato.
-
-`state` kennt zusätzlich `paused` und `docking`, weil `GetState` – ebenfalls
-undokumentiert – den Zustand liefert, den der Roboter selbst kennt. Das ersetzt
-das frühere Raten über die Saugmotor-Drehzahl.
-
-`suspended` bedeutet: der Roboter hat die Reinigung selbst unterbrochen – in
-aller Regel, weil der Akku zur Neige ging – und will sie nach dem Laden
-fortsetzen (`uiState UIMGR_STATE_CLEANINGSUSPENDED`, `robotState
-ST_M1_Charging_Cleaning`). Steht dabei `isDocked 0`, hat er die Basis nicht
-mehr erreicht.
-
-`unreachable` bedeutet: die Verbindung steht, aber der Roboter antwortet
-nicht – er schläft, oder die Brücke ist noch nicht mit ihm verdrahtet. Die
-Abfrage geht dann schrittweise bis auf das 16-fache Intervall zurück
-(höchstens eine Stunde), statt jede Minute Zeitüberschreitungen ins Log zu
-schreiben. Die erste Antwort setzt alles zurück.
-
-`GetErr` trennt Fehler und Hinweise: ein voller Staubbehälter (Alert 248) ist
-kein Fehler und setzt das Gerät nicht in den Fehlerzustand – ein fehlender
-Behälter (Error 249) schon.
-
-Die Namen folgen bewusst `74_BOTVAC.pm`, damit bestehende `notify`- und
-`DOIF`-Definitionen mit minimalen Anpassungen weiterlaufen.
-
-Zeitpläne macht FHEM ohnehin besser als die App:
+`batteryHealth` kommt aus der Messelektronik im Akku selbst und sagt zuverlässig
+voraus, wann ein Roboter unterwegs liegenbleibt. Unterhalb von etwa 50 % schafft
+er es zunehmend nicht mehr zurück zur Basis, obwohl die Ladeanzeige bis kurz
+davor brauchbar aussieht:
 
 ```
-define di_saugen DOIF ([08:30] and [Anwesenheit] eq "absent") (set Staubsauger startCleaning)
+define di_akku DOIF ([Staubsauger:batteryHealth] < 50) (set Nachricht Akku schwach)
 ```
 
-## Verifizierter Kommandosatz
+### Fehler und Hinweise
 
-Die Vorgaben stammen aus dem Mitschnitt eines **BotVac D6 Connected,
-Software 4.5.3.189** – der vollständige Dump liegt in
-[`docs/reference-dump-botvac-d6.txt`](docs/reference-dump-botvac-d6.txt),
-die Auswertung in [docs/serial-commands.md](docs/serial-commands.md).
+`error`/`errorCode` und `alert`/`alertCode` sind getrennt: ein voller
+Staubbehälter (Alert 248) ist kein Fehler und setzt das Gerät nicht in den
+Fehlerzustand, ein fehlender Behälter (Error 249) schon. Code 200
+(`UI_ALERT_INVALID`) bedeutet „nichts zu melden“.
 
-Die `Help`-Ausgabe des Roboters ist allerdings nicht vollständig. Pause,
-Fortsetzen und **Rückkehr zur Basis** laufen über `SetEvent` – die
-authentifizierte Event-Schnittstelle, über die früher die Cloud den Roboter
-gesteuert hat und die in keiner Kommandoliste auftaucht. Ihr Schlüssel wird aus
-der MAC-Adresse aus `GetVersion` berechnet.
+### Einstellungen und Geräteangaben
 
-Gefunden und entschlüsselt hat das das Projekt
-[OpenNeato](https://github.com/renjfk/OpenNeato) (MIT, © 2026 Soner Köksal);
-hier steht eine eigenständige Perl-Umsetzung, gegen deren C++-Original auf
-bekannten Werten geprüft. Details in
-[docs/serial-commands.md](docs/serial-commands.md).
+`ecoMode`, `intenseClean`, `binFullDetect`, `wallFollower`, `clickSounds`,
+`melodySounds`, `warningSounds`, `led`, `wifiEnabled`, `language`,
+`filterChangeTime`, `brushChangeTime`, `dirtBinInterval`, `scheduleEnabled`,
+`scheduledCleanings` – beim Verbinden und nach jeder Änderung gelesen.
+
+`model`, `serialNumber`, `firmware`, `ldsSoftware`, `hardware`, `commandApi`.
+
+`navigationMode` ist eine Ausnahme: die Konsole kennt kein Kommando, ihn
+auszulesen. Das Reading hält deshalb den zuletzt gesetzten Wert. Weil der
+Roboter den Modus nicht über Läufe hinweg behält, sendet das Modul ihn vor
+jeder Hausreinigung erneut.
+
+Die Reading-Namen folgen bewusst denen von `74_BOTVAC.pm`, damit bestehende
+`notify`- und `DOIF`-Definitionen mit geringen Anpassungen weiterlaufen.
+
+## Attribute
+
+| Attribut | Vorgabe | Bedeutung |
+|---|---|---|
+| `interval` | 60 | Abfrageintervall in Sekunden |
+| `timeout` | 10 | wie lange auf eine Antwort gewartet wird |
+| `connectTimeout` | 2 | Obergrenze für einen Verbindungsversuch |
+| `pollState` | 1 | `GetState` mitabfragen |
+| `pollErrors` | 1 | `GetErr` mitabfragen |
+| `pollMotors` | 0 | `GetMotors` mitabfragen |
+| `pollSettings` | 0 | Benutzereinstellungen bei jedem Durchlauf mitlesen |
+| `useSetEvent` | 1 | die Event-Schnittstelle nutzen, wenn verfügbar |
+| `cmdCleanHouse`, `cmdCleanSpot`, `cmdCleanExplore`, `cmdCleanPersistent`, `cmdCleanStop`, `cmdCleanPause`, `cmdCleanResume`, `cmdSendToBase`, `cmdFindMe` | – | Konsolenkommando je set-Kommando überschreiben |
+| `httpPath`, `httpMethod` | `/api/serial`, POST | nur für den HTTP-Transport |
+| `disable` | 0 | Verbindung schließen und Abfrage anhalten |
+
+## Kommandosatz
+
+Die `Help`-Ausgabe des Roboters ist nicht vollständig. Pause, Fortsetzen und
+Rückkehr zur Basis laufen über `SetEvent`, die authentifizierte
+Event-Schnittstelle, über die früher die Cloud den Roboter gesteuert hat und
+die in keiner Kommandoliste auftaucht. Ihr Schlüssel wird aus der MAC-Adresse
+berechnet, die `GetVersion` mitliefert.
 
 | set-Kommando | Weg |
 |---|---|
 | `startCleaning`, `stop` | `SetEvent`, sonst `Clean House` / `Clean Stop` |
-| `pause` / `resume` | `SetEvent`; ohne Schlüssel `SetButton start` (Umschalter) |
-| `sendToBase` | **nur** `SetEvent` – `SetButton IRhome` und `back` tun auf einem D6 nichts |
+| `pause` / `resume` | `SetEvent`, ohne Schlüssel `SetButton start` als Umschalter |
+| `sendToBase` | **nur** `SetEvent` – die dokumentierten Kommandos bieten dafür nichts |
 | `findMe` | `PlaySound SoundID 20` |
 
-Ob die Schnittstelle freigeschaltet ist, zeigt das Reading `commandApi`
-(`setEvent` oder `legacy`). Mit `attr <dev> useSetEvent 0` lassen sich die
-dokumentierten Kommandos erzwingen, und jedes Kommando bleibt per Attribut
-überschreibbar.
+Das Reading `commandApi` zeigt, ob die Schnittstelle freigeschaltet ist
+(`setEvent` oder `legacy`). `attr <dev> useSetEvent 0` erzwingt die
+dokumentierten Kommandos.
+
+Gefunden und entschlüsselt hat die Event-Schnittstelle, `GetState` und die
+übrigen undokumentierten Kommandos das Projekt
+[OpenNeato](https://github.com/renjfk/OpenNeato) (MIT, © 2026 Soner Köksal).
+Dieses Modul enthält eine eigenständige Perl-Umsetzung, die gegen deren
+C++-Original auf bekannten Werten geprüft ist. Alle Einzelheiten stehen in
+[docs/serial-commands.md](docs/serial-commands.md).
 
 ## Was nicht geht
 
-* **No-Go-Linien und Zonenreinigung.** Die wurden in der App verwaltet und
-  sind mit ihr weg. Die *persistente Karte* selbst lebt im Roboter:
-  `Clean Explore` baut sie auf, `Clean Persistent` nutzt sie.
-* **Firmware-Updates.** Gab es nur über die Cloud.
+* **No-Go-Linien und Zonenreinigung.** Sie wurden in der App verwaltet und sind
+  mit ihr verschwunden. Die persistente Karte selbst lebt im Roboter:
+  `startCleaning explore` baut sie auf, `startCleaning persistent` nutzt sie.
+* **Firmware-Updates des Roboters.** Gab es nur über die Cloud.
+* **Die Karte auslesen.** Die Konsole bietet dafür kein Kommando.
 
-## Ohne Roboter testen
+## Werkzeuge
 
-`tools/neato_sim.py` emuliert die Konsole eines Botvac über TCP – inklusive
-Kommando-Echo, `Ctrl-Z`-Terminator, CSV-Ausgaben und plausiblem Verhalten
-(Akku entlädt sich beim Saugen, lädt in der Basis):
+### Konsole eines Roboters auslesen
+
+`tools/dump_robot.py` fragt den Roboter nach seiner Kommandoliste, holt zu jedem
+genannten Kommando den Hilfetext und dazu die Ausgaben der harmlosen `Get*`-
+Kommandos. Das Ergebnis dokumentiert, was die jeweilige Firmware versteht.
+
+```
+python3 tools/dump_robot.py --device /dev/ttyACM0
+python3 tools/dump_robot.py --tcp 192.168.1.42:23
+python3 tools/dump_robot.py --device /dev/ttyACM0 --diagnose
+```
+
+Das Skript liest nur: es sendet ausschließlich `Help` und `Get*`. Kein
+`TestMode`, keine Motorkommandos, keine Einstellungsänderungen. Seriennummern
+werden maskiert, damit sich ein Dump gefahrlos weitergeben lässt
+(`--no-redact` schaltet das ab). Es braucht nur ein normales Python 3; die
+serielle Schnittstelle wird über `termios` aus der Standardbibliothek
+konfiguriert, pyserial ist nicht nötig.
+
+`--diagnose` prüft Gerät, Rechte und belegende Prozesse, meldet die USB-Kennung,
+hört fünf Sekunden passiv mit und probiert alle drei Zeilenenden durch, jeweils
+mit Hexdump. Die häufigsten Ursachen für eine stumme Konsole sind, in dieser
+Reihenfolge: ein schlafender Roboter, der falsche Port, ein belegter Port und
+ein Ladekabel ohne Datenleitungen.
+
+### Ohne Roboter testen
+
+`tools/neato_sim.py` emuliert die Konsole eines Botvac über TCP, mit
+Kommando-Echo, `Ctrl-Z`-Terminator, den CSV-Ausgaben des echten Geräts und
+plausiblem Verhalten: der Akku entlädt sich beim Saugen und lädt in der Basis.
 
 ```
 python3 tools/neato_sim.py
@@ -255,83 +291,39 @@ python3 tools/neato_sim.py
 
 ```
 define Staubsauger NeatoLocal 127.0.0.1:8888
-set Staubsauger startCleaning
 ```
 
-Mit `--usb` verhält sich der Simulator wie ein Roboter mit angestecktem
-USB-Host und verweigert die Reinigung mit Fehler 220 – damit lässt sich der
-Fehlerpfad testen, ohne ihn provozieren zu müssen.
+Mit `--usb` verweigert der Simulator die Reinigung mit Fehler 220 wie ein
+Roboter mit angestecktem USB-Host.
 
-## Wenn FHEM kurz stehenbleibt
+## Fehlersuche
 
-FHEM baut TCP-Verbindungen **synchron** auf: solange ein Verbindungsversuch
-läuft, steht der ganze Prozess. Die Brücke hängt am Strom des Roboters und
-verschwindet mit ihm – ist er aus oder der Akku leer, versucht FHEM in
-Abständen erneut zu verbinden und bleibt dabei jedes Mal kurz stehen.
+**FHEM bleibt kurz stehen.** FHEM baut TCP-Verbindungen synchron auf; solange
+ein Verbindungsversuch läuft, steht der ganze Prozess. Die Brücke wird vom
+Roboter versorgt und ist weg, sobald er aus ist. Das Modul begrenzt den Versuch
+auf 2 Sekunden, `connectTimeout` senkt das weiter. `apptime` in der
+FHEM-Kommandozeile weist es nach: erscheint dort `NeatoLocal_Ready` oder
+`DevIo_OpenDev` mit langer Laufzeit, ist es der Verbindungsaufbau.
 
-Das Modul begrenzt diesen Versuch auf 2 Sekunden statt der 3 Sekunden, die
-FHEM voreinstellt; über `attr <dev> connectTimeout` lässt sich das weiter
-senken. Ganz vermeiden lässt es sich nicht, solange die Brücke unerreichbar
-ist – `attr <dev> disable 1` schaltet es ab, wenn der Roboter länger aus
-bleibt.
+**Der Roboter antwortet nicht.** `state` steht auf `unreachable`: Roboter
+wecken, Verdrahtung der Brücke prüfen (`http://neato.local/` zeigt die
+Byte-Zähler in beide Richtungen), oder `--diagnose` am USB-Port laufen lassen.
 
-Wer wissen will, was genau bremst: `apptime` in der FHEM-Kommandozeile zeigt
-pro Funktion die längste Laufzeit. Erscheint dort `NeatoLocal_Ready` oder
-`DevIo_OpenDev` mit mehreren hundert Millisekunden, ist es der Verbindungs-
-aufbau. Zurücksetzen mit `apptime clear`.
-
-## Konsole des eigenen Roboters auslesen
-
-`tools/dump_robot.py` fragt den Roboter nach seiner Kommandoliste, holt zu jedem
-genannten Kommando den Hilfetext und dazu die Ausgaben der harmlosen `Get*`-
-Kommandos. Heraus kommt eine Datei, die genau dokumentiert, was *deine* Firmware
-versteht – die Grundlage, um die noch offenen Kommandos zu ergänzen.
-
-```
-python3 tools/dump_robot.py --device /dev/ttyACM0
-python3 tools/dump_robot.py --tcp 192.168.1.42:23     # über die WLAN-Brücke
-```
-
-Das Skript **liest nur**: es sendet ausschließlich `Help` und `Get*`. Kein
-`TestMode`, keine Motorkommandos, keine Einstellungsänderungen. Seriennummern
-werden standardmäßig maskiert, damit sich der Dump gefahrlos weitergeben lässt
-(`--no-redact` schaltet das ab). Es braucht nur ein normales Python 3 –
-die serielle Schnittstelle wird über `termios` aus der Standardbibliothek
-konfiguriert, pyserial ist nicht nötig.
-
-Solange FHEM die Schnittstelle geöffnet hat, ist sie belegt: erst den Dump
-ziehen, dann das Gerät in FHEM definieren.
-
-### Wenn der Roboter nicht antwortet
-
-```
-python3 tools/dump_robot.py --device /dev/ttyACM0 --diagnose
-```
-
-Der Diagnosemodus prüft Gerät, Rechte und belegende Prozesse, meldet die
-USB-Kennung, hört fünf Sekunden passiv mit und probiert alle drei Zeilenenden
-durch – mit Hexdump dessen, was tatsächlich ankommt. Das Ergebnis landet in
-`neato-diagnose.txt`.
-
-Die häufigsten Ursachen, in dieser Reihenfolge:
-
-1. **Der Roboter schläft.** Der USB-Port ist dann zwar da, die Konsole aber
-   stumm. Eine Taste drücken, von der Basis nehmen und zurückstellen, dann
-   sofort erneut versuchen.
-2. **Falscher Port.** Der Diagnosemodus listet alle vorhandenen
-   `ttyACM*`/`ttyUSB*` auf.
-3. **Port belegt**, meist von FHEM selbst.
-4. **Ladekabel statt Datenkabel.**
+**Ein Kommando bleibt wirkungslos.** `get <dev> help Clean` zeigt, was die
+jeweilige Firmware versteht; über die `cmd*`-Attribute lässt sich jedes
+Kommando anpassen.
 
 ## Tests
 
 ```
-perl tools/check_module.pl    # Modul: Laden, Transporterkennung, Parser
+perl tools/check_module.pl    # Modul: Laden, Transporte, Parser, Zustandslogik
 python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
 python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über TCP
 ```
 
-Alle drei laufen ohne FHEM-Installation und ohne Roboter.
+Alle drei laufen ohne FHEM-Installation und ohne Roboter. Die Testdaten sind
+wörtliche Konsolenausgaben eines BotVac D6. Die CI führt sie bei jedem Push aus
+und übersetzt zusätzlich die Brücken-Firmware für ESP32-C3 und ESP8266.
 
 ## Lizenz
 
