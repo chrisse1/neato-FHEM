@@ -73,28 +73,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Only the binary decides. Its companion file carries a build time and
-          # a commit id and therefore differs on every run, so going by that
-          # would add a commit to every push, firmware change or not.
-          #
-          # Compared against the index rather than the working tree, because a
-          # file that is new instead of modified does not show up in a plain
-          # diff at all -- which once made the very first build discard its
-          # own image.
-          git add firmware/prebuilt/neato_bridge-esp32c3.bin
-          if git diff --cached --quiet; then
-            echo "image unchanged"
-            git checkout -- firmware/prebuilt/ 2>/dev/null || true
-            exit 0
-          fi
-          git add firmware/prebuilt/
-          git commit -m "Rebuild the flashable ESP32-C3 image [skip ci]"
-          # The other auto-committing job pushes to main as well and may have
-          # got there first, which would make this a non-fast-forward.
+          # Generated files have no history worth merging: whatever this run
+          # produced is the truth. Rebasing them invites content conflicts, and a
+          # rebase that stops half way leaves the repository unable to even pull.
+          # So the index is reset onto the latest main -- the working tree keeps
+          # the freshly built files -- and only they are staged again.
           for attempt in 1 2 3; do
-            git pull --rebase --autostash origin main && git push && exit 0
+            git fetch origin main
+            git reset --mixed origin/main >/dev/null
+            git add firmware/prebuilt/
+            if git diff --cached --quiet -- firmware/prebuilt/neato_bridge-esp32c3.bin; then
+              echo "nothing to commit"
+              exit 0
+            fi
+            git commit -m "Rebuild the flashable ESP32-C3 image [skip ci]" && git push && exit 0
             sleep 5
           done
           echo "could not push after three attempts"
           exit 1
-
