@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.7";
+my $NeatoLocal_VERSION = "0.11.8";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1269,7 +1269,17 @@ sub NeatoLocal_Set($@) {
         my $psk  = join(" ", @parts);
 
         $hash->{helper}{flashRunning} = 1;
-        Log3 $name, 3, "NeatoLocal ($name) - sending credentials to $port";
+
+        # What arrived here, not what was typed. Quoting, and whatever FHEM
+        # does to a command line before a module sees it, can differ -- and a
+        # password that lost a character on the way is otherwise invisible
+        # until the router refuses it. The password itself stays out of the
+        # log; its length is what makes the difference visible.
+        Log3 $name, 3, "NeatoLocal ($name) - sending credentials to $port: "
+                     . "ssid '$ssid', " . length($psk) . " character password";
+        readingsSingleUpdate($hash, "lastFlash",
+                             "wifi: sending '$ssid', " . length($psk)
+                           . " character password", 1);
 
         BlockingCall("NeatoLocal_ProvisionBlocking", "$name|$port|$ssid|$psk",
                      "NeatoLocal_ProvisionDone", 150,

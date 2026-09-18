@@ -93,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.11.0";
+static const char *VERSION = "0.12.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -114,6 +114,7 @@ static uint32_t bytesToRobot = 0;
 static uint32_t bytesFromRobot = 0;
 static uint32_t lastRobotByte = 0;     // millis() of the last byte the robot sent
 static uint32_t clientCount = 0;
+static uint32_t linkDrops = 0;         // how often the link was found down
 
 // On the ESP8266 the debug port and the robot port are the same UART, so once
 // the swap has happened nothing may be printed any more -- it would land in the
@@ -525,6 +526,16 @@ static void startAccessPoint(bool keepTrying, bool announce) {
 static bool connectAttempt(uint32_t timeoutMs) {
   WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
 
+  // Modem sleep parks the radio between beacons. That is fine for a board that
+  // only sends, and wrong for one that has to answer: incoming connections
+  // arrive late or not at all, and an access point may drop a sleeping client
+  // altogether. The bridge exists to be called, so it stays awake.
+#if defined(ARDUINO_ARCH_ESP8266)
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+#else
+  WiFi.setSleep(false);
+#endif
+
   uint32_t deadline = millis() + timeoutMs;
   while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - deadline) < 0) {
     if (debugUsable) {
@@ -633,6 +644,8 @@ static void consoleHandle(const String &line) {
     Serial.println(apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
     Serial.print(F("mode ")); Serial.println(apMode ? F("ap") : F("station"));
     Serial.print(F("bytes from robot ")); Serial.println(bytesFromRobot);
+    Serial.print(F("link drops ")); Serial.println(linkDrops);
+    Serial.print(F("uptime s ")); Serial.println(millis() / 1000);
     return;
   }
 
@@ -1011,8 +1024,58 @@ void setup() {
 
 // ------------------------------------------------------------------- loop --
 
+// The station side is supervised rather than trusted. Automatic reconnect
+// covers the ordinary case, but a mesh that hands the board to another access
+// point, or a radio that comes back in a state the SDK does not recover from,
+// both end with a bridge that is simply gone -- and nobody is standing next to
+// the robot to notice. Costing the console half a second is the better trade.
+static uint32_t lastLinkCheck = 0;
+static uint32_t offlineSince = 0;
+static uint8_t recoveryAttempts = 0;
+
+static void superviseLink() {
+  if (apMode || wifiSsid.length() == 0) {
+    return;                       // the access point is its own way back in
+  }
+  if (millis() - lastLinkCheck < 5000) {
+    return;
+  }
+  lastLinkCheck = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    offlineSince = 0;
+    recoveryAttempts = 0;
+    return;
+  }
+
+  // Give the SDK its own chance first -- a brief drop is not worth a reset.
+  if (offlineSince == 0) {
+    offlineSince = millis();
+    linkDrops++;
+    return;
+  }
+  if (millis() - offlineSince < 30000) {
+    return;
+  }
+
+  offlineSince = 0;
+  recoveryAttempts++;
+  dbg(String(F("link down for 30 s, recovery attempt ")) + recoveryAttempts);
+
+  if (recoveryAttempts >= 4) {
+    dbg(F("no link after four attempts -- opening the setup access point"));
+    startAccessPoint(true);
+    recoveryAttempts = 0;
+    return;
+  }
+
+  restartRadio();
+  WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
+}
+
 void loop() {
   ArduinoOTA.handle();
+  superviseLink();
 #if HAVE_CONFIG_STORE
   consolePoll();
 #endif

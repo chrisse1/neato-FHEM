@@ -280,6 +280,17 @@ und meldet `ERR storage did not keep the credentials`, wenn dort nichts
 angekommen ist. Sonst sähe ein leerer Speicher nach dem Neustart genauso aus
 wie ein falsches Passwort.
 
+Die Brücke schaltet den Stromsparmodus des Funkmoduls ab. Er parkt das Funkteil
+zwischen den Beacons, was für ein Gerät richtig ist, das nur sendet – die
+Brücke muss aber *antworten*, und eingehende Verbindungen kommen dann verspätet
+oder gar nicht an.
+
+Die Station-Verbindung wird außerdem überwacht: ist sie 30 Sekunden weg, wird
+das Funkmodul neu gestartet und neu verbunden, nach vier erfolglosen Versuchen
+öffnet das Board den Setup-Access-Point. `info` zählt mit, wie oft die
+Verbindung abgerissen ist (`link drops`) – ein Board, das sich verbindet und
+dann verschwindet, ist ein anderer Fehler als eines, das nie hochkommt.
+
 Scheitert das Verbinden im laufenden Betrieb, öffnet das Board den Access Point
 **zusätzlich** zur Station-Seite und versucht weiter, das konfigurierte Netz zu
 erreichen. Ein Router, der kurz weg ist, strandet es also nicht bis zum nächsten
