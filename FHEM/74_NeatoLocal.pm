@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.5.0";
+my $NeatoLocal_VERSION = "0.5.1";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -287,6 +287,8 @@ sub NeatoLocal_Init($) {
     $hash->{helper}{buffer} = "";
     delete $hash->{helper}{pending};
 
+    $hash->{VERSION} = $NeatoLocal_VERSION;
+
     Log3 $name, 4, "NeatoLocal ($name) - initializing communication";
 
     NeatoLocal_Enqueue($hash, "GetVersion", \&NeatoLocal_ParseVersion);
@@ -355,6 +357,11 @@ sub NeatoLocal_PollInterval($) {
 sub NeatoLocal_Poll($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
+
+    # Define runs once, so after "reload" an existing device would keep showing
+    # the version it was defined with -- which is exactly the number someone
+    # checks to see whether the reload took.
+    $hash->{VERSION} = $NeatoLocal_VERSION;
 
     return NeatoLocal_RestartTimer($hash) if (IsDisabled($name));
 
@@ -944,10 +951,18 @@ sub NeatoLocal_UpdateState($) {
     elsif ($ui =~ m/CLEANINGPAUSED/i) {
         $state = "paused";
     }
+    # The robot suspends a run on its own when the battery runs low: it heads
+    # for the base, charges, and resumes. UIMGR_STATE_CLEANINGSUSPENDED
+    # together with ST_M1_Charging_Cleaning is that state, and it is emphatically
+    # not cleaning -- a substring match on CLEAN used to call it that.
+    elsif ($ui =~ m/SUSPENDED/i) {
+        $state = "suspended";
+    }
     elsif ($ui =~ m/DOCKING/i) {
         $state = "docking";
     }
-    elsif ($haveState && !NeatoLocal_StateIsIdle($hash) && $ui =~ m/CLEAN/i) {
+    elsif ($haveState && !NeatoLocal_StateIsIdle($hash)
+           && $ui =~ m/CLEANING/i && $ui !~ m/PAUSED|SUSPENDED|COMPLETE/i) {
         $state = "cleaning";
     }
     elsif (!$haveState && ($cleaning || $assume)) {
@@ -1389,9 +1404,11 @@ sub NeatoLocal_LeaveTestMode($) {
         itself, e.g. UIMGR_STATE_STANDBY and ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent or legacy, depending on whether the event
         API could be unlocked</li>
-    <li><b>state</b> - cleaning, paused, docking, charging, docked, idle,
-        error, unreachable or
-        disconnected. <i>unreachable</i> means the connection is up but the
+    <li><b>state</b> - cleaning, paused, suspended, docking, charging, docked,
+        idle, error, unreachable or
+        disconnected. <i>suspended</i> means the robot interrupted the run by
+        itself, usually to charge, and intends to resume.
+        <i>unreachable</i> means the connection is up but the
         robot does not answer -- asleep, or a bridge that is not wired to it
         yet. Polling then backs off up to 16x the interval instead of filling
         the log.</li>
@@ -1536,8 +1553,10 @@ sub NeatoLocal_LeaveTestMode($) {
         meldet, z. B. UIMGR_STATE_STANDBY und ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent oder legacy, je nachdem ob sich die
         Event-Schnittstelle freischalten liess</li>
-    <li><b>state</b> - cleaning, paused, docking, charging, docked, idle,
-        error, unreachable oder disconnected. <i>unreachable</i> heisst: die Verbindung steht,
+    <li><b>state</b> - cleaning, paused, suspended, docking, charging, docked,
+        idle, error, unreachable oder disconnected. <i>suspended</i> heisst:
+        der Roboter hat die Reinigung selbst unterbrochen, meist wegen leerem
+        Akku, und will sie nach dem Laden fortsetzen. <i>unreachable</i> heisst: die Verbindung steht,
         aber der Roboter antwortet nicht -- er schlaeft, oder die Bruecke ist
         noch nicht mit ihm verdrahtet. Die Abfrage geht dann bis auf das
         16-fache Intervall zurueck, statt das Log zu fluten.</li>

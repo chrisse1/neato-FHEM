@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 105;
+use Test::More tests => 109;
 
 package main;
 
@@ -266,9 +266,33 @@ NeatoLocal_ParseState($h, { cmd => "GetState" },
 is(NeatoLocal_StateIsIdle($h), 1, "a stale UI state does not keep it cleaning");
 isnt(ReadingsVal("nt", "state", ""), "cleaning", "and the state follows the robot, not the UI");
 
+# Captured from a robot that ran out of battery on its way back to the base:
+# it suspends the run, intends to charge and resume, and is anything but
+# cleaning. A substring match on CLEAN used to report it as cleaning.
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_CLEANINGSUSPENDED\r\n"
+  . "Current Robot State is: ST_M1_Charging_Cleaning\r\n");
+is(ReadingsVal("nt", "state", ""), "suspended",
+   "a run the robot suspended itself is not reported as cleaning");
+is(ReadingsVal("nt", "robotState", ""), "ST_M1_Charging_Cleaning",
+   "and the robot state is kept verbatim");
+
+# a completed run must not read as cleaning either
+NeatoLocal_ParseState($h, { cmd => "GetState" },
+    "Current UI State is: UIMGR_STATE_CLEANINGCOMPLETE\r\n"
+  . "Current Robot State is: ST_C_Standby\r\n");
+isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning");
+
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
-is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_STARTHOUSECLEANING",
+is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- the version has to survive a reload -------------------------------------
+# Define runs once, so an existing device would otherwise keep reporting the
+# version it was defined with.
+$h->{VERSION} = "0.0.1";
+NeatoLocal_Poll($h);
+isnt($h->{VERSION}, "0.0.1", "polling refreshes the reported version");
 
 # --- user settings -----------------------------------------------------------
 # Verbatim GetUserSettings output of a BotVac D6 Connected, including the

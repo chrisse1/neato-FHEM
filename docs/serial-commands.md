@@ -147,8 +147,15 @@ Current Robot State is: ST_C_Standby
 Damit entfällt das Raten über `Vacuum_RPM`. Ab Firmware 4.5.3 ist
 `robotState` maßgeblich: `uiState` kann auf `UIMGR_STATE_STARTHOUSECLEANING`
 hängenbleiben, während der Roboter längst wieder in `ST_C_Standby` steht.
-Als Leerlauf gelten `ST_C_Standby`, `ST_C_Idle` und `ST_M2_Charging_StdBy`;
-`CLEANINGPAUSED` im `uiState` heißt pausiert, `DOCKING` heißt auf dem Heimweg.
+Als Leerlauf gelten `ST_C_Standby`, `ST_C_Idle` und `ST_M2_Charging_StdBy`.
+Im `uiState` heißt `CLEANINGPAUSED` pausiert, `DOCKING` auf dem Heimweg und
+`CLEANINGSUSPENDED` vom Roboter selbst unterbrochen – letzteres zusammen mit
+`ST_M1_Charging_Cleaning`, wenn er wegen leerem Akku laden und danach
+weitermachen will.
+
+Vorsicht bei der Auswertung: alle diese Namen enthalten `CLEAN`. Wer darauf
+prüft, hält einen unterbrochenen oder abgeschlossenen Lauf für eine laufende
+Reinigung.
 
 ### Weitere
 

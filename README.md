@@ -167,6 +167,12 @@ jeder Hausreinigung erneut – genauso löst es OpenNeato.
 undokumentiert – den Zustand liefert, den der Roboter selbst kennt. Das ersetzt
 das frühere Raten über die Saugmotor-Drehzahl.
 
+`suspended` bedeutet: der Roboter hat die Reinigung selbst unterbrochen – in
+aller Regel, weil der Akku zur Neige ging – und will sie nach dem Laden
+fortsetzen (`uiState UIMGR_STATE_CLEANINGSUSPENDED`, `robotState
+ST_M1_Charging_Cleaning`). Steht dabei `isDocked 0`, hat er die Basis nicht
+mehr erreicht.
+
 `unreachable` bedeutet: die Verbindung steht, aber der Roboter antwortet
 nicht – er schläft, oder die Brücke ist noch nicht mit ihm verdrahtet. Die
 Abfrage geht dann schrittweise bis auf das 16-fache Intervall zurück
