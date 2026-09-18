@@ -116,6 +116,8 @@ Es kann immer nur ein Prozess den Port offen haben – ein laufendes
 | `binFullDetect on\|off` | Erkennung des vollen Staubbehälters |
 | `syncTime` | Uhr des Zeitgebers im Roboter aus FHEM stellen |
 | `button <name>` | beliebigen Tastendruck simulieren |
+| `flashESP [<image>]` | Brücken-Firmware auf ein Board am USB-Port schreiben |
+| `wifiESP <ssid> <passwort>` | einem frisch geflashten Board die WLAN-Zugangsdaten übergeben |
 | `statusRequest` | Zustand sofort abfragen |
 | `reconnect` | Verbindung neu aufbauen |
 | `testMode on\|off` | Diagnosemodus der Konsole, siehe unten |
@@ -138,6 +140,44 @@ und sendet bei Shutdown, Löschen und `disable` immer `TestMode Off`.
 | `settings` | Benutzereinstellungen |
 | `motors`, `sensors`, `usage`, `wifiStatus` | Rohdaten |
 | `raw <Kommando>` | beliebiges Konsolenkommando |
+
+### Brücke aus FHEM heraus einrichten
+
+Ein fabrikneuer ESP32-C3 lässt sich vom FHEM-Rechner aus in Betrieb nehmen,
+ohne Arduino-Installation und ohne dass die Zugangsdaten in der Firmware
+stehen. Voraussetzung ist `esptool` (`pip3 install esptool` oder das
+gleichnamige Paket der Distribution) und ein Board am USB-Port.
+
+```
+attr Staubsauger espPort /dev/ttyACM0
+attr Staubsauger espImage /opt/fhem/neato_bridge-esp32c3.bin
+
+set Staubsauger flashESP
+set Staubsauger wifiESP MeinWLAN geheim
+```
+
+Das fertige Image liegt in
+[`firmware/prebuilt/`](firmware/prebuilt/) und wird von der CI aus dem
+Quelltext gebaut; die Datei daneben nennt Version, Commit und Prüfsumme.
+
+`flashESP` schreibt es mit `esptool` an Offset 0. `wifiESP` übergibt die
+Zugangsdaten anschließend über denselben USB-Port an die
+Konfigurationskonsole der Firmware und meldet die Adresse, unter der die
+Brücke dann erreichbar ist, im Reading `bridgeAddress`. Enthalten Name oder
+Passwort Leerzeichen, gehören sie in Anführungszeichen:
+`set Staubsauger wifiESP "Mein WLAN" "lange Passphrase"`.
+
+Beides läuft in einem eigenen Prozess, FHEM bleibt also bedienbar. Das Ergebnis
+steht im Reading `lastFlash`.
+
+**Das geht nur vor dem Einbau.** Die Brücke wird im Roboter von dessen 3,3-V-
+Schiene versorgt und hängt dann nicht mehr am USB-Port des Servers. Ist sie
+einmal verbaut, führt der Weg über OTA.
+
+Wer nicht vom FHEM-Rechner aus flasht: ein Board ohne gespeicherte Zugangsdaten
+öffnet den Access Point `neato-setup` mit einer Eingabeseite. Dieselben
+Kommandos nimmt die Firmware auch über ein Terminal am USB-Port entgegen
+(`help` listet sie).
 
 ## Readings
 
@@ -209,6 +249,8 @@ Die Reading-Namen folgen bewusst denen von `74_BOTVAC.pm`, damit bestehende
 | `interval` | 60 | Abfrageintervall in Sekunden |
 | `timeout` | 10 | wie lange auf eine Antwort gewartet wird |
 | `connectTimeout` | 2 | Obergrenze für einen Verbindungsversuch |
+| `espPort` | `/dev/ttyACM0` | USB-Port des Brücken-Boards beim Flashen |
+| `espImage` | – | Image, das `flashESP` ohne Angabe schreibt |
 | `pollState` | 1 | `GetState` mitabfragen |
 | `pollErrors` | 1 | `GetErr` mitabfragen |
 | `pollMotors` | 0 | `GetMotors` mitabfragen |

@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 134;
+use Test::More tests => 149;
 
 package main;
 
@@ -35,6 +35,9 @@ sub DevIo_CloseDev          { return undef; }
 sub DevIo_SimpleWrite       { push @WRITTEN, $_[1]; }
 sub DevIo_SimpleRead        { return undef; }
 sub HttpUtils_NonblockingGet { }
+
+our @BLOCKING;
+sub BlockingCall          { push @BLOCKING, [@_]; return { }; }
 sub HttpUtils_BlockingGet    { push @WRITTEN, "http:" . $_[0]->{url}; return ("", ""); }
 sub asyncOutput             { }
 sub urlEncode               { my $s = shift; $s =~ s/([^A-Za-z0-9\-\._~])/sprintf("%%%02X", ord($1))/ge; return $s; }
@@ -287,6 +290,63 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- flashing the bridge -----------------------------------------------------
+# The work happens in a forked child, so the set only has to hand over the
+# right arguments -- and refuse when it cannot.
+{
+    my ($fh, $fr) = mkdev("fl NeatoLocal 192.168.1.42:23");
+    $attr{"fl"}{espPort} = "/dev/ttyACM9";
+    @BLOCKING = ();
+
+    like(NeatoLocal_Set($fh, "fl", "flashESP"), qr/espImage/,
+         "flashESP without an image says where to get one");
+    is(scalar(@BLOCKING), 0, "and forks nothing");
+
+    NeatoLocal_Set($fh, "fl", "flashESP", "/tmp/neato.bin");
+    is(scalar(@BLOCKING), 1, "flashESP runs in the background");
+    is($BLOCKING[0][0], "NeatoLocal_FlashBlocking", "with the flashing worker");
+    is($BLOCKING[0][1], "fl|/dev/ttyACM9|/tmp/neato.bin",
+       "and is told device, port and image");
+    is(ReadingsVal("fl", "lastFlash", ""), "running", "the run is visible as a reading");
+
+    like(NeatoLocal_Set($fh, "fl", "flashESP", "/tmp/neato.bin"), qr/already in progress/,
+         "a second run is refused while one is going");
+
+    delete $fh->{helper}{flashRunning};
+    @BLOCKING = ();
+
+    NeatoLocal_Set($fh, "fl", "wifiESP", "MeinWLAN", "geheim");
+    is($BLOCKING[0][1], "fl|/dev/ttyACM9|MeinWLAN|geheim",
+       "ssid and password are passed on");
+    is($BLOCKING[0][0], "NeatoLocal_ProvisionBlocking", "with the provisioning worker");
+
+    # both may contain spaces, which is what the quotes are for
+    delete $fh->{helper}{flashRunning};
+    @BLOCKING = ();
+    NeatoLocal_Set($fh, "fl", "wifiESP", '"Mein', 'WLAN"', '"lange', 'Passphrase"');
+    is($BLOCKING[0][1], "fl|/dev/ttyACM9|Mein WLAN|lange Passphrase",
+       "quoted values survive the split FHEM already did");
+
+    delete $fh->{helper}{flashRunning};
+    like(NeatoLocal_Set($fh, "fl", "wifiESP"), qr/usage/, "wifiESP needs arguments");
+
+    # the results have to land in readings
+    $fh->{helper}{flashRunning} = 1;
+    NeatoLocal_FlashDone("fl|OK|Hash of data verified");
+    is(ReadingsVal("fl", "lastFlash", ""), "ok", "a successful flash is recorded");
+    is($fh->{helper}{flashRunning}, undef, "and the run is marked finished");
+
+    NeatoLocal_ProvisionDone("fl|OK|192.168.1.57");
+    is(ReadingsVal("fl", "bridgeAddress", ""), "192.168.1.57",
+       "provisioning reports the address the bridge took");
+
+    NeatoLocal_FlashDone("fl|failed (rc 2)|A fatal error occurred");
+    like(ReadingsVal("fl", "lastFlash", ""), qr/fatal/, "a failure keeps its reason");
+
+    delete $attr{"fl"};
+    delete $defs{"fl"};
+}
 
 # --- an unreachable bridge must not stall FHEM for long ----------------------
 # FHEM opens TCP connections synchronously; DevIo's default of 3 seconds is

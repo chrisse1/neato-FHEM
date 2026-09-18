@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.7.1";
+my $NeatoLocal_VERSION = "0.8.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -56,6 +56,8 @@ my %NeatoLocal_sets = (
     "syncTime"       => "noArg",
     "button"         => "soft,start,spot,back,up,down,IRstart,IRspot,IRfront,"
                       . "IRback,IRleft,IRright,IRhome,IReco",
+    "flashESP"       => "textField",
+    "wifiESP"        => "textField",
     "statusRequest"  => "noArg",
     "reconnect"      => "noArg",
     "testMode"       => "on,off",
@@ -162,7 +164,7 @@ sub NeatoLocal_Initialize($) {
     $hash->{ReadyFn}    = "NeatoLocal_Ready";
 
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
-                      . "interval timeout connectTimeout "
+                      . "interval timeout connectTimeout espPort espImage "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1201,6 +1203,57 @@ sub NeatoLocal_Set($@) {
         return undef;
     }
 
+    if ($cmd eq "flashESP" || $cmd eq "wifiESP") {
+        return "a flash or provisioning run is already in progress"
+            if ($hash->{helper}{flashRunning});
+
+        my $port = AttrVal($name, "espPort", "/dev/ttyACM0");
+
+        if ($cmd eq "flashESP") {
+            # The bridge is powered by the robot, so it cannot be flashed while
+            # it is installed -- this is for a board on the FHEM machine's USB.
+            my $image = defined($args[0]) ? $args[0]
+                      : AttrVal($name, "espImage", "");
+            return "usage: set $name flashESP <image file>, or set the "
+                 . "attribute espImage. The image is built by this project's "
+                 . "CI and lives in firmware/prebuilt/."
+                if ($image eq "");
+
+            $hash->{helper}{flashRunning} = 1;
+            readingsSingleUpdate($hash, "lastFlash", "running", 1);
+            Log3 $name, 3, "NeatoLocal ($name) - flashing $image to $port";
+
+            BlockingCall("NeatoLocal_FlashBlocking", "$name|$port|$image",
+                         "NeatoLocal_FlashDone", 180,
+                         "NeatoLocal_FlashAborted", $hash);
+            return undef;
+        }
+
+        # FHEM has already split the arguments, so rejoin and parse again --
+        # both a network name and a password may contain spaces, and then they
+        # have to be quoted: set <dev> wifiESP "My WLAN" "secret phrase"
+        my $line = join(" ", @args);
+        my @parts;
+        while ($line =~ m/\G\s*(?:"([^"]*)"|(\S+))/gc) {
+            push @parts, defined($1) ? $1 : $2;
+        }
+
+        return "usage: set $name wifiESP <ssid> <password>\n"
+             . "Quote values containing spaces: wifiESP \"My WLAN\" \"secret\""
+            if (!@parts);
+
+        my $ssid = shift(@parts);
+        my $psk  = join(" ", @parts);
+
+        $hash->{helper}{flashRunning} = 1;
+        Log3 $name, 3, "NeatoLocal ($name) - sending credentials to $port";
+
+        BlockingCall("NeatoLocal_ProvisionBlocking", "$name|$port|$ssid|$psk",
+                     "NeatoLocal_ProvisionDone", 60,
+                     "NeatoLocal_FlashAborted", $hash);
+        return undef;
+    }
+
     if ($cmd eq "statusRequest") {
         NeatoLocal_StatusRequest($hash);
         return undef;
@@ -1318,6 +1371,164 @@ sub NeatoLocal_Set($@) {
         NeatoLocal_StatusRequest($hash);
         return undef;
     }
+
+    return undef;
+}
+
+##############################################################################
+# flashing and provisioning the WiFi bridge
+##############################################################################
+
+# esptool goes by three different names depending on how it was installed.
+sub NeatoLocal_FindEsptool() {
+    foreach my $candidate ("esptool.py", "esptool") {
+        my $path = qx(command -v $candidate 2>/dev/null);
+        chomp($path);
+        return $path if ($path ne "");
+    }
+
+    my $rc = system("python3 -c 'import esptool' >/dev/null 2>&1");
+    return "python3 -m esptool" if ($rc == 0);
+
+    return "";
+}
+
+# Runs in a forked child, so a flash of half a minute does not stall FHEM.
+sub NeatoLocal_FlashBlocking($) {
+    my ($string) = @_;
+    my ($name, $port, $image) = split("\\|", $string, 3);
+
+    my $tool = NeatoLocal_FindEsptool();
+    return "$name|esptool not found. Install it with 'pip3 install esptool' or "
+         . "the distribution package of the same name."
+        if ($tool eq "");
+
+    return "$name|image not readable: $image" if (!-r $image);
+    return "$name|serial port not found: $port" if (!-e $port);
+    return "$name|no write access to $port -- is the FHEM user in the dialout "
+         . "group?" if (!-w $port);
+
+    my $cmd = "$tool --chip esp32c3 --port " . quotemeta($port)
+            . " write_flash 0x0 " . quotemeta($image) . " 2>&1";
+    my $out = qx($cmd);
+    my $rc  = $? >> 8;
+
+    # keep the tail: the interesting part of an esptool failure is at the end
+    $out =~ s/\s+$//;
+    my @lines = split(/\n/, $out);
+    $out = join(" | ", @lines[-6 .. -1]) if (@lines > 6);
+    $out = join(" | ", @lines) if (@lines <= 6);
+
+    return "$name|" . (($rc == 0) ? "OK|$out" : "failed (rc $rc)|$out");
+}
+
+sub NeatoLocal_FlashDone($) {
+    my ($string) = @_;
+    my ($name, $result, $detail) = split("\\|", $string, 3);
+    my $hash = $defs{$name};
+
+    return if (!defined($hash));
+    delete $hash->{helper}{flashRunning};
+
+    $detail = "" if (!defined($detail));
+
+    if ($result eq "OK") {
+        Log3 $name, 3, "NeatoLocal ($name) - flashing finished: $detail";
+        readingsSingleUpdate($hash, "lastFlash", "ok", 1);
+    }
+    else {
+        Log3 $name, 1, "NeatoLocal ($name) - flashing $result: $detail";
+        readingsSingleUpdate($hash, "lastFlash", "$result: $detail", 1);
+    }
+
+    return undef;
+}
+
+sub NeatoLocal_FlashAborted($) {
+    my ($hash) = @_;
+    my $name = (ref($hash) eq "HASH") ? $hash->{NAME} : $hash;
+
+    delete $defs{$name}{helper}{flashRunning} if (defined($defs{$name}));
+    Log3 $name, 1, "NeatoLocal ($name) - flashing timed out";
+    readingsSingleUpdate($defs{$name}, "lastFlash", "timeout", 1)
+        if (defined($defs{$name}));
+
+    return undef;
+}
+
+# Sends the credentials to the freshly flashed board over its USB port, using
+# the little configuration console the firmware provides. One line per value so
+# both may contain spaces.
+sub NeatoLocal_ProvisionBlocking($) {
+    my ($string) = @_;
+    my ($name, $port, $ssid, $psk) = split("\\|", $string, 4);
+
+    return "$name|serial port not found: $port" if (!-e $port);
+    return "$name|no write access to $port" if (!-w $port);
+
+    # 115200 8N1, no flow control, and no reset of the board on open
+    system("stty -F " . quotemeta($port) . " 115200 cs8 -cstopb -parenb "
+         . "-crtscts -ixon -ixoff raw -echo >/dev/null 2>&1");
+
+    my $fh;
+    return "$name|cannot open $port" if (!open($fh, "+<", $port));
+
+    my $old = select($fh); $| = 1; select($old);
+
+    print $fh "\n";
+    print $fh "wifi ssid $ssid\n";
+    print $fh "wifi psk $psk\n";
+    print $fh "wifi save\n";
+
+    # give the board a moment to reconnect, then read what it says
+    my $reply = "";
+    my $deadline = time() + 25;
+    eval {
+        local $SIG{ALRM} = sub { die "timeout\n" };
+        alarm(25);
+        while (time() < $deadline) {
+            my $line = <$fh>;
+            last if (!defined($line));
+            $reply .= $line;
+            last if ($line =~ m/^ip\s+\S+/);
+        }
+        alarm(0);
+    };
+    alarm(0);
+    close($fh);
+
+    $reply =~ s/\s+/ /g;
+    $reply =~ s/^\s+|\s+$//g;
+
+    return "$name|no answer -- is the board running the bridge firmware?"
+        if ($reply eq "");
+
+    my $ip = ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/) ? $1 : "";
+
+    return "$name|OK|" . (($ip ne "") ? $ip : $reply);
+}
+
+sub NeatoLocal_ProvisionDone($) {
+    my ($string) = @_;
+    my ($name, $result, $detail) = split("\\|", $string, 3);
+    my $hash = $defs{$name};
+
+    return if (!defined($hash));
+    delete $hash->{helper}{flashRunning};
+
+    $detail = "" if (!defined($detail));
+
+    if ($result ne "OK") {
+        Log3 $name, 1, "NeatoLocal ($name) - provisioning failed: $result $detail";
+        readingsSingleUpdate($hash, "lastFlash", "wifi: $result", 1);
+        return undef;
+    }
+
+    Log3 $name, 3, "NeatoLocal ($name) - bridge reachable at $detail";
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "lastFlash", "wifi ok");
+    readingsBulkUpdate($hash, "bridgeAddress", $detail);
+    readingsEndUpdate($hash, 1);
 
     return undef;
 }
@@ -1481,6 +1692,12 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>While test mode is on the robot ignores its own buttons and will
         not clean.</b> The module always sends "TestMode Off" on shutdown,
         delete and disable.</li>
+    <li><b>flashESP &lt;image&gt;</b> - writes the bridge firmware to a board on
+        the FHEM machine's USB port, using esptool. The bridge is powered by the
+        robot, so this is for a board that is not installed yet.</li>
+    <li><b>wifiESP &lt;ssid&gt; &lt;password&gt;</b> - hands the credentials to a
+        freshly flashed board over its USB port and reports the address it
+        ends up with in the reading bridgeAddress.</li>
     <li><b>raw &lt;command&gt;</b> - sends an arbitrary console command</li>
     <li><b>reconnect</b> - reopens the connection</li>
   </ul><br>
@@ -1500,6 +1717,9 @@ sub NeatoLocal_LeaveTestMode($) {
   <ul>
     <li><b>interval</b> - polling interval in seconds, default 60</li>
     <li><b>timeout</b> - response timeout in seconds, default 10</li>
+    <li><b>espPort</b> - the USB port the bridge board is on while it is being
+        flashed, default /dev/ttyACM0</li>
+    <li><b>espImage</b> - path of the image flashESP writes when none is given</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -1638,6 +1858,12 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>Im Testmodus reagiert der Roboter nicht mehr auf seine Tasten und
         reinigt nicht.</b> Das Modul sendet bei Shutdown, Loeschen und
         Deaktivieren immer "TestMode Off".</li>
+    <li><b>flashESP &lt;Image&gt;</b> - schreibt die Bruecken-Firmware auf ein
+        Board am USB-Port des FHEM-Rechners, per esptool. Die Bruecke wird vom
+        Roboter versorgt, das ist also fuer ein noch nicht eingebautes Board.</li>
+    <li><b>wifiESP &lt;SSID&gt; &lt;Passwort&gt;</b> - uebergibt einem frisch
+        geflashten Board die Zugangsdaten ueber dessen USB-Port und meldet die
+        Adresse, unter der es erreichbar wird, im Reading bridgeAddress.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein beliebiges Konsolenkommando</li>
     <li><b>reconnect</b> - baut die Verbindung neu auf</li>
   </ul><br>
@@ -1657,6 +1883,9 @@ sub NeatoLocal_LeaveTestMode($) {
   <ul>
     <li><b>interval</b> - Abfrageintervall in Sekunden, Standard 60</li>
     <li><b>timeout</b> - Antwort-Timeout in Sekunden, Standard 10</li>
+    <li><b>espPort</b> - der USB-Port, an dem das Bruecken-Board beim Flashen
+        haengt, Standard /dev/ttyACM0</li>
+    <li><b>espImage</b> - Pfad des Images, das flashESP ohne Angabe schreibt</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,

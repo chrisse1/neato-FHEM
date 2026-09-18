@@ -55,7 +55,9 @@
   #include <WiFi.h>
   #include <ESPmDNS.h>
   #include <ArduinoOTA.h>
+  #include <Preferences.h>
   #define ROBOT Serial1         // dedicated UART, USB CDC stays free
+  #define HAVE_CONFIG_STORE 1   // credentials live in NVS, not in this file
 #else
   #error "neato_bridge targets ESP8266 or ESP32"
 #endif
@@ -79,7 +81,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.3.0";
+static const char *VERSION = "0.4.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -105,6 +107,67 @@ static uint32_t clientCount = 0;
 // the swap has happened nothing may be printed any more -- it would land in the
 // robot's console. On the ESP32 the USB port stays ours for good.
 static bool debugUsable = true;
+
+// The credentials the board is actually using. On the ESP32 they are kept in
+// NVS so one prebuilt image fits every network; the #defines above only serve
+// as a fallback for a self-compiled binary. The ESP8266 has no NVS and no
+// spare serial port, so there they stay compile-time values.
+static String wifiSsid;
+static String wifiPsk;
+static bool apMode = false;     // no credentials: running as an access point
+
+#if HAVE_CONFIG_STORE
+static Preferences prefs;
+#endif
+
+// What a freshly flashed image carries when nobody filled the defines in.
+static bool isPlaceholder(const String &ssid) {
+  return ssid.length() == 0 || ssid == "your-ssid";
+}
+
+static void configLoad() {
+#if HAVE_CONFIG_STORE
+  prefs.begin("neato", true);
+  wifiSsid = prefs.getString("ssid", "");
+  wifiPsk = prefs.getString("psk", "");
+  prefs.end();
+#endif
+  if (isPlaceholder(wifiSsid)) {
+    wifiSsid = WIFI_SSID;
+    wifiPsk = WIFI_PSK;
+  }
+  if (isPlaceholder(wifiSsid)) {
+    wifiSsid = "";
+    wifiPsk = "";
+  }
+}
+
+static bool configSave(const String &ssid, const String &psk) {
+#if HAVE_CONFIG_STORE
+  if (ssid.length() == 0 || ssid.length() > 32 || psk.length() > 63) {
+    return false;
+  }
+  prefs.begin("neato", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("psk", psk);
+  prefs.end();
+  wifiSsid = ssid;
+  wifiPsk = psk;
+  return true;
+#else
+  (void)ssid;
+  (void)psk;
+  return false;   // nowhere to put them
+#endif
+}
+
+static void configClear() {
+#if HAVE_CONFIG_STORE
+  prefs.begin("neato", false);
+  prefs.clear();
+  prefs.end();
+#endif
+}
 
 // --------------------------------------------------------------- helpers ---
 
@@ -162,7 +225,27 @@ static void handOverSerial() {
 #endif
 }
 
+// No credentials to try: open an access point so the board can be configured
+// from a phone. The serial console is the other way in, and the one FHEM uses.
+static void startAccessPoint() {
+  apMode = true;
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("neato-setup");
+  if (debugUsable) {
+    Serial.print(F("no credentials stored -- access point 'neato-setup' at "));
+    Serial.println(WiFi.softAPIP());
+  }
+}
+
 static void setupWifi() {
+  configLoad();
+
+  if (wifiSsid.length() == 0) {
+    startAccessPoint();
+    return;
+  }
+
+  apMode = false;
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -171,7 +254,7 @@ static void setupWifi() {
   WiFi.setHostname(HOSTNAME);
 #endif
   WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PSK);
+  WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
 
   // Do not block forever -- the robot has to stay reachable over serial even
   // if the access point is down, and the SDK reconnects on its own.
@@ -186,7 +269,125 @@ static void setupWifi() {
   if (debugUsable) {
     Serial.println();
   }
+
+  // A wrong password should not leave the board unreachable for good.
+  if (WiFi.status() != WL_CONNECTED) {
+    startAccessPoint();
+  }
 }
+
+// ------------------------------------------------------- config console ----
+#if HAVE_CONFIG_STORE
+// A line-based console on the USB port. This is what FHEM talks to right after
+// flashing, while the board is still plugged into the server: no access point
+// to join, no phone, no second network.
+//
+// SSID and password are set on their own lines so both may contain spaces --
+// the value is everything after the keyword.
+static String consoleLine;
+
+static void consoleHandle(const String &line) {
+  String cmd = line;
+  cmd.trim();
+  if (cmd.length() == 0) {
+    return;
+  }
+
+  if (cmd.equalsIgnoreCase("help")) {
+    Serial.println(F("wifi ssid <name>     set the network name"));
+    Serial.println(F("wifi psk <password>  set the password"));
+    Serial.println(F("wifi save            store both and reconnect"));
+    Serial.println(F("wifi status          show what is configured"));
+    Serial.println(F("wifi clear           forget the stored credentials"));
+    Serial.println(F("info                 version, IP and MAC"));
+    Serial.println(F("restart              reboot the board"));
+    return;
+  }
+
+  if (cmd.equalsIgnoreCase("info")) {
+    Serial.print(F("version ")); Serial.println(VERSION);
+    Serial.print(F("mac ")); Serial.println(WiFi.macAddress());
+    Serial.print(F("ip "));
+    Serial.println(apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+    Serial.print(F("mode ")); Serial.println(apMode ? F("ap") : F("station"));
+    Serial.print(F("bytes from robot ")); Serial.println(bytesFromRobot);
+    return;
+  }
+
+  if (cmd.equalsIgnoreCase("restart")) {
+    Serial.println(F("OK restarting"));
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+    return;
+  }
+
+  if (cmd.startsWith("wifi ") || cmd.equalsIgnoreCase("wifi")) {
+    String rest = cmd.substring(4);
+    rest.trim();
+
+    if (rest.startsWith("ssid")) {
+      wifiSsid = rest.substring(4);
+      wifiSsid.trim();
+      Serial.print(F("OK ssid ")); Serial.println(wifiSsid);
+      return;
+    }
+    if (rest.startsWith("psk")) {
+      wifiPsk = rest.substring(3);
+      wifiPsk.trim();
+      Serial.print(F("OK psk set, ")); Serial.print(wifiPsk.length());
+      Serial.println(F(" characters"));
+      return;
+    }
+    if (rest.equalsIgnoreCase("save")) {
+      if (!configSave(wifiSsid, wifiPsk)) {
+        Serial.println(F("ERR ssid missing or too long"));
+        return;
+      }
+      Serial.println(F("OK saved, reconnecting"));
+      Serial.flush();
+      WiFi.disconnect(true);
+      delay(100);
+      setupWifi();
+      Serial.print(F("ip "));
+      Serial.println(apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+      return;
+    }
+    if (rest.equalsIgnoreCase("status")) {
+      Serial.print(F("ssid ")); Serial.println(wifiSsid);
+      Serial.print(F("psk ")); Serial.println(wifiPsk.length() ? F("set") : F("empty"));
+      Serial.print(F("connected ")); Serial.println(WiFi.status() == WL_CONNECTED ? 1 : 0);
+      return;
+    }
+    if (rest.equalsIgnoreCase("clear")) {
+      configClear();
+      wifiSsid = "";
+      wifiPsk = "";
+      Serial.println(F("OK cleared, restart to take effect"));
+      return;
+    }
+  }
+
+  Serial.print(F("ERR unknown command: "));
+  Serial.println(cmd);
+}
+
+static void consolePoll() {
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (consoleLine.length() > 0) {
+        consoleHandle(consoleLine);
+        consoleLine = "";
+      }
+      continue;
+    }
+    if (consoleLine.length() < 160) {
+      consoleLine += c;
+    }
+  }
+}
+#endif  // HAVE_CONFIG_STORE
 
 // --------------------------------------------------------------- status ----
 
@@ -307,6 +508,59 @@ static void sendTestPage(WiFiClient &http) {
   sendPage(http, body);
 }
 
+#if HAVE_CONFIG_STORE
+// Percent decoding for the values coming back from the setup form.
+static String urlDecode(const String &in) {
+  String out;
+  out.reserve(in.length());
+  for (size_t i = 0; i < in.length(); i++) {
+    char c = in[i];
+    if (c == '+') {
+      out += ' ';
+    } else if (c == '%' && i + 2 < in.length()) {
+      out += (char) strtol(in.substring(i + 1, i + 3).c_str(), nullptr, 16);
+      i += 2;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+static String queryValue(const String &query, const String &key) {
+  int at = query.indexOf(key + "=");
+  if (at < 0) {
+    return "";
+  }
+  int from = at + key.length() + 1;
+  int to = query.indexOf('&', from);
+  return urlDecode(query.substring(from, to < 0 ? query.length() : to));
+}
+
+// The setup form, served while the board runs as an access point.
+static void sendSetupPage(WiFiClient &http, const String &note) {
+  String body;
+  body.reserve(900);
+  body += F("<!doctype html><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>neato_bridge setup</title>"
+            "<style>body{font:15px system-ui,sans-serif;margin:2rem;max-width:22rem}"
+            "input{width:100%;padding:.5rem;margin:.3rem 0 1rem;font-size:1rem}"
+            "button{padding:.6rem 1.2rem;font-size:1rem}"
+            "p.note{color:#b00}</style><h1>neato_bridge</h1>");
+  if (note.length()) {
+    body += F("<p class=note>");
+    body += note;
+    body += F("</p>");
+  }
+  body += F("<form action='/wifi'><label>WLAN-Name</label>"
+            "<input name=ssid autocapitalize=off autocorrect=off>"
+            "<label>Passwort</label><input name=psk type=password>"
+            "<button type=submit>Speichern</button></form>");
+  sendPage(http, body);
+}
+#endif  // HAVE_CONFIG_STORE
+
 static void handleHttp() {
   WiFiClient http = acceptFrom(httpServer);
   if (!http) {
@@ -328,10 +582,46 @@ static void handleHttp() {
     yield();
   }
 
-  if (line.startsWith("GET /test")) {
-    sendTestPage(http);
-  } else {
-    sendStatusPage(http);
+  bool handled = false;
+
+#if HAVE_CONFIG_STORE
+  if (line.startsWith("GET /wifi?")) {
+    int from = line.indexOf('?') + 1;
+    int to = line.indexOf(' ', from);
+    String query = line.substring(from, to < 0 ? line.length() : to);
+    String ssid = queryValue(query, "ssid");
+    String psk = queryValue(query, "psk");
+
+    if (!configSave(ssid, psk)) {
+      sendSetupPage(http, F("Name fehlt oder ist zu lang."));
+    } else {
+      String body = F("<!doctype html><meta charset=utf-8><title>neato_bridge</title>"
+                      "<body style='font:15px system-ui,sans-serif;margin:2rem'>"
+                      "<p>Gespeichert. Das Modul startet neu und verbindet sich mit ");
+      body += ssid;
+      body += F(".</p>");
+      sendPage(http, body);
+      http.flush();
+      http.stop();
+      delay(300);
+      ESP.restart();
+      return;
+    }
+    handled = true;
+  }
+  else if (apMode) {
+    // nothing else is reachable in this mode, so every path leads to setup
+    sendSetupPage(http, "");
+    handled = true;
+  }
+#endif
+
+  if (!handled) {
+    if (line.startsWith("GET /test")) {
+      sendTestPage(http);
+    } else {
+      sendStatusPage(http);
+    }
   }
 
   http.flush();
@@ -349,8 +639,13 @@ void setup() {
 
   setupWifi();
 
-  if (WiFi.status() == WL_CONNECTED) {
-    dbg(String(F("connected, IP ")) + WiFi.localIP().toString());
+  if (apMode) {
+    dbg(String(F("access point 'neato-setup' at ")) + WiFi.softAPIP().toString());
+    dbg(F("configure with: wifi ssid <name> / wifi psk <password> / wifi save"));
+  }
+  else if (WiFi.status() == WL_CONNECTED) {
+    dbg(String(F("connected to ")) + wifiSsid);
+    dbg(String(F("IP ")) + WiFi.localIP().toString());
     dbg(String(F("status page: http://")) + WiFi.localIP().toString()
         + F("/  or http://") + HOSTNAME + F(".local/"));
     dbg(String(F("FHEM: define Staubsauger NeatoLocal "))
@@ -381,6 +676,9 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+#if HAVE_CONFIG_STORE
+  consolePoll();
+#endif
 #if defined(ARDUINO_ARCH_ESP8266)
   MDNS.update();
 #endif
