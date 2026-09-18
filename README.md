@@ -160,6 +160,20 @@ von der CI aus dem Quelltext gebaut; die Textdatei daneben nennt Version,
 Commit und SHA-256. `flashESP` nimmt eine URL oder einen lokalen Pfad; ohne
 Angabe wird das Attribut `espImage` verwendet.
 
+**Der FHEM-Updatemechanismus holt das Image nicht.** `update` bringt
+ausschließlich `74_NeatoLocal.pm` – die Indexdatei führt nichts anderes auf.
+Das ist Absicht: das Image ist gut ein Megabyte groß und wird pro Brücke genau
+einmal gebraucht, es hat auf jedem FHEM-Server nichts verloren. `flashESP` lädt
+es bei Bedarf selbst.
+
+Wer es doch lokal vorhalten will:
+
+```sh
+curl -fLO https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/firmware/prebuilt/neato_bridge-esp32c3.bin
+```
+
+und dann `attr <dev> espImage /pfad/neato_bridge-esp32c3.bin`.
+
 Bevor das Board angefasst wird, prüft das Modul, ob es überhaupt eine Firmware
 vor sich hat – Größe und das Magic-Byte `0xE9`. Eine abgebrochene Übertragung
 oder eine HTML-Fehlerseite statt des Images führt so zu einer Meldung statt zu
