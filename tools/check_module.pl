@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 149;
+use Test::More tests => 154;
 
 package main;
 
@@ -343,6 +343,28 @@ is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
 
     NeatoLocal_FlashDone("fl|failed (rc 2)|A fatal error occurred");
     like(ReadingsVal("fl", "lastFlash", ""), qr/fatal/, "a failure keeps its reason");
+
+    # nothing that is not a firmware image may reach the board
+    my $tmp = "/tmp/.neato_check_image";
+    is(NeatoLocal_CheckImage("$tmp.missing"), "image not readable: $tmp.missing",
+       "a missing image is refused");
+
+    open(my $th, ">", $tmp); close($th);
+    like(NeatoLocal_CheckImage($tmp), qr/empty/, "an empty file is refused");
+
+    open($th, ">", $tmp); print $th "<html>404: Not Found</html>"; close($th);
+    like(NeatoLocal_CheckImage($tmp), qr/far too small/,
+         "an error page instead of an image is refused");
+
+    open($th, ">", $tmp); binmode($th);
+    print $th "\x00" x 200000; close($th);
+    like(NeatoLocal_CheckImage($tmp), qr/0xE9/,
+         "a file of the right size but without the magic is refused");
+
+    open($th, ">", $tmp); binmode($th);
+    print $th "\xE9" . ("\x00" x 200000); close($th);
+    is(NeatoLocal_CheckImage($tmp), undef, "a plausible image passes");
+    unlink($tmp);
 
     delete $attr{"fl"};
     delete $defs{"fl"};

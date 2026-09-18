@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.8.0";
+my $NeatoLocal_VERSION = "0.8.1";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1393,6 +1393,31 @@ sub NeatoLocal_FindEsptool() {
     return "";
 }
 
+# Refuse to write something that is not an ESP firmware image. Every such image
+# starts with the magic byte 0xE9, and a merged one for the C3 is around a
+# megabyte -- a truncated download or an HTML error page fails both tests.
+sub NeatoLocal_CheckImage($) {
+    my ($path) = @_;
+
+    return "image not readable: $path" if (!-r $path);
+
+    my $size = -s $path;
+    return "image is empty: $path" if (!$size);
+    return "image is far too small for a firmware ($size bytes): $path"
+        if ($size < 100000);
+
+    my $fh;
+    return "cannot open $path" if (!open($fh, "<", $path));
+    binmode($fh);
+    my $read = read($fh, my $head, 1);
+    close($fh);
+
+    return "not a firmware image, the 0xE9 magic is missing: $path"
+        if (!$read || ord($head) != 0xE9);
+
+    return undef;
+}
+
 # Runs in a forked child, so a flash of half a minute does not stall FHEM.
 sub NeatoLocal_FlashBlocking($) {
     my ($string) = @_;
@@ -1403,7 +1428,19 @@ sub NeatoLocal_FlashBlocking($) {
          . "the distribution package of the same name."
         if ($tool eq "");
 
-    return "$name|image not readable: $image" if (!-r $image);
+    # A URL is fetched first, so the image does not have to be downloaded by
+    # hand before it can be written.
+    if ($image =~ m/^https?:\/\//i) {
+        my $target = "/tmp/.neato_bridge_flash.bin";
+        my $rc = system("curl -fsSL -o " . quotemeta($target) . " "
+                      . quotemeta($image) . " 2>/dev/null");
+        return "$name|could not download $image" if ($rc != 0);
+        $image = $target;
+    }
+
+    my $bad = NeatoLocal_CheckImage($image);
+    return "$name|$bad" if (defined($bad));
+
     return "$name|serial port not found: $port" if (!-e $port);
     return "$name|no write access to $port -- is the FHEM user in the dialout "
          . "group?" if (!-w $port);
@@ -1692,8 +1729,10 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>While test mode is on the robot ignores its own buttons and will
         not clean.</b> The module always sends "TestMode Off" on shutdown,
         delete and disable.</li>
-    <li><b>flashESP &lt;image&gt;</b> - writes the bridge firmware to a board on
-        the FHEM machine's USB port, using esptool. The bridge is powered by the
+    <li><b>flashESP &lt;image|url&gt;</b> - writes the bridge firmware to a board
+        on the FHEM machine's USB port, using esptool. A URL is downloaded
+        first, and anything that is not a firmware image is refused before the
+        board is touched. The bridge is powered by the
         robot, so this is for a board that is not installed yet.</li>
     <li><b>wifiESP &lt;ssid&gt; &lt;password&gt;</b> - hands the credentials to a
         freshly flashed board over its USB port and reports the address it
@@ -1858,8 +1897,10 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>Im Testmodus reagiert der Roboter nicht mehr auf seine Tasten und
         reinigt nicht.</b> Das Modul sendet bei Shutdown, Loeschen und
         Deaktivieren immer "TestMode Off".</li>
-    <li><b>flashESP &lt;Image&gt;</b> - schreibt die Bruecken-Firmware auf ein
-        Board am USB-Port des FHEM-Rechners, per esptool. Die Bruecke wird vom
+    <li><b>flashESP &lt;Image|URL&gt;</b> - schreibt die Bruecken-Firmware auf
+        ein Board am USB-Port des FHEM-Rechners, per esptool. Eine URL wird
+        zuvor geladen, und was keine Firmware ist, wird abgelehnt, bevor das
+        Board angefasst wird. Die Bruecke wird vom
         Roboter versorgt, das ist also fuer ein noch nicht eingebautes Board.</li>
     <li><b>wifiESP &lt;SSID&gt; &lt;Passwort&gt;</b> - uebergibt einem frisch
         geflashten Board die Zugangsdaten ueber dessen USB-Port und meldet die

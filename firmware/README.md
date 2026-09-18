@@ -49,7 +49,23 @@ dieselbe Schiene gegeneinander. 220 µF Elko plus 100 nF direkt am Modul
 zwischen 3V3 und GND spendieren; die Sendespitzen sind beim ESP8266 deutlich
 höher als beim C3.
 
-## Flashen
+## Fertiges Image
+
+`prebuilt/neato_bridge-esp32c3.bin` wird von der CI aus diesem Quelltext gebaut:
+Bootloader, Partitionstabelle und Anwendung zu einer Datei zusammengefasst, die
+`esptool` an Offset 0 schreibt. Die Textdatei daneben nennt Version, Commit und
+SHA-256.
+
+```sh
+esptool.py --chip esp32c3 -p /dev/ttyACM0 write_flash 0x0 neato_bridge-esp32c3.bin
+```
+
+Die Zugangsdaten stehen **nicht** im Image. Ein frisch geflashtes Board nimmt sie
+über die serielle Konsole entgegen (`wifi ssid …`, `wifi psk …`, `wifi save`)
+oder über den Access Point `neato-setup`, den es ohne gespeicherte Daten öffnet.
+Aus FHEM heraus erledigen das `set <dev> flashESP` und `set <dev> wifiESP`.
+
+## Selbst flashen
 
 **Roboter dabei nicht angeschlossen.**
 

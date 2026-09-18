@@ -150,15 +150,20 @@ gleichnamige Paket der Distribution) und ein Board am USB-Port.
 
 ```
 attr Staubsauger espPort /dev/ttyACM0
-attr Staubsauger espImage /opt/fhem/neato_bridge-esp32c3.bin
 
-set Staubsauger flashESP
+set Staubsauger flashESP https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/firmware/prebuilt/neato_bridge-esp32c3.bin
 set Staubsauger wifiESP MeinWLAN geheim
 ```
 
-Das fertige Image liegt in
-[`firmware/prebuilt/`](firmware/prebuilt/) und wird von der CI aus dem
-Quelltext gebaut; die Datei daneben nennt Version, Commit und Prüfsumme.
+Das fertige Image liegt in [`firmware/prebuilt/`](firmware/prebuilt/) und wird
+von der CI aus dem Quelltext gebaut; die Textdatei daneben nennt Version,
+Commit und SHA-256. `flashESP` nimmt eine URL oder einen lokalen Pfad; ohne
+Angabe wird das Attribut `espImage` verwendet.
+
+Bevor das Board angefasst wird, prüft das Modul, ob es überhaupt eine Firmware
+vor sich hat – Größe und das Magic-Byte `0xE9`. Eine abgebrochene Übertragung
+oder eine HTML-Fehlerseite statt des Images führt so zu einer Meldung statt zu
+einem halb beschriebenen Flash.
 
 `flashESP` schreibt es mit `esptool` an Offset 0. `wifiESP` übergibt die
 Zugangsdaten anschließend über denselben USB-Port an die
