@@ -79,6 +79,10 @@ attr Staubsauger interval 60
 save
 ```
 
+Die Adresse darf auch fehlen: `define Staubsauger NeatoLocal` legt das Gerät an,
+ohne sich zu verbinden – für den Fall, dass die Brücke erst noch geflasht werden
+muss. Siehe [Brücke aus FHEM heraus einrichten](#brücke-aus-fhem-heraus-einrichten).
+
 `reload` ist nicht optional: FHEM liest das Verzeichnis `FHEM/` beim Start ein
 und kennt eine danach hinzugekommene Datei nicht – `define` scheitert sonst mit
 *Cannot load module NeatoLocal*. Ein FHEM-Neustart tut es genauso. Ohne `save`
@@ -148,12 +152,26 @@ ohne Arduino-Installation und ohne dass die Zugangsdaten in der Firmware
 stehen. Voraussetzung ist `esptool` (`pip3 install esptool` oder das
 gleichnamige Paket der Distribution) und ein Board am USB-Port.
 
+Der Ablauf von einem nackten Board bis zum laufenden Gerät, ohne dass
+zwischendurch eine Definition von Hand angepasst werden muss:
+
 ```
+define Staubsauger NeatoLocal
 attr Staubsauger espPort /dev/ttyACM0
 
 set Staubsauger flashESP https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/firmware/prebuilt/neato_bridge-esp32c3.bin
 set Staubsauger wifiESP MeinWLAN geheim
+save
 ```
+
+Das `define` **ohne Adresse** ist der Schlüssel: `flashESP` braucht ein Gerät,
+aber die Adresse der Brücke gibt es zu diesem Zeitpunkt noch nicht. Das Gerät
+steht dann im Zustand `unconfigured`, verbindet sich nicht und fragt nichts ab.
+Sobald `wifiESP` meldet, unter welcher Adresse die Brücke hochgekommen ist,
+trägt sich das Gerät diese selbst ein und verbindet sich. `save` hält das fest.
+
+Ein Gerät, das bereits eine Adresse hat, behält sie – es wird nur im Log
+vermerkt, unter welcher Adresse die neu eingerichtete Brücke erreichbar ist.
 
 Das fertige Image liegt in [`firmware/prebuilt/`](firmware/prebuilt/) und wird
 von der CI aus dem Quelltext gebaut; die Textdatei daneben nennt Version,

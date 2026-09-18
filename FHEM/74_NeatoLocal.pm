@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.8.1";
+my $NeatoLocal_VERSION = "0.9.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -179,16 +179,32 @@ sub NeatoLocal_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t][ \t]*", $def);
 
-    return "Usage: define <name> NeatoLocal <serialDevice|host:port|http://host[:port]>"
-        if (int(@a) != 3);
+    return "Usage: define <name> NeatoLocal [serialDevice|host:port|http://host[:port]]\n"
+         . "Leave the address out to define the device before the bridge exists; "
+         . "set flashESP and set wifiESP then fill it in."
+        if (int(@a) < 2 || int(@a) > 3);
 
     my $name = $a[0];
-    my $dev  = $a[2];
+    # No address yet: this is the state a device is in between being defined and
+    # its bridge being flashed. Everything that talks to the robot is off, but
+    # flashESP and wifiESP work -- and wifiESP fills the address in.
+    my $dev  = (int(@a) == 3) ? $a[2] : "none";
 
     $hash->{VERSION}         = $NeatoLocal_VERSION;
     $hash->{helper}{queue}   = [];
     $hash->{helper}{buffer}  = "";
     delete $hash->{helper}{pending};
+
+    if (lc($dev) eq "none") {
+        $hash->{TRANSPORT} = "none";
+        delete $hash->{DeviceName};
+        delete $hash->{URL};
+
+        Log3 $name, 3, "NeatoLocal ($name) - defined without an address, waiting "
+                     . "for the bridge";
+        readingsSingleUpdate($hash, "state", "unconfigured", 1);
+        return undef;
+    }
 
     if ($dev =~ m/^https?:\/\//i) {
         $dev =~ s/\/+$//;
@@ -230,7 +246,8 @@ sub NeatoLocal_Undef($$) {
 
     NeatoLocal_LeaveTestMode($hash);
     RemoveInternalTimer($hash);
-    DevIo_CloseDev($hash) if ($hash->{TRANSPORT} ne "http");
+    DevIo_CloseDev($hash)
+        if ($hash->{TRANSPORT} ne "http" && $hash->{TRANSPORT} ne "none");
 
     return undef;
 }
@@ -305,6 +322,7 @@ sub NeatoLocal_Init($) {
     my $name = $hash->{NAME};
 
     return undef if (IsDisabled($name));
+    return undef if ($hash->{TRANSPORT} eq "none");
 
     $hash->{helper}{queue}  = [];
     $hash->{helper}{buffer} = "";
@@ -339,7 +357,7 @@ sub NeatoLocal_Callback($$) {
 sub NeatoLocal_Ready($) {
     my ($hash) = @_;
 
-    return undef if ($hash->{TRANSPORT} eq "http");
+    return undef if ($hash->{TRANSPORT} eq "http" || $hash->{TRANSPORT} eq "none");
     return undef if (IsDisabled($hash->{NAME}));
 
     return DevIo_OpenDev($hash, 1, "NeatoLocal_Init", "NeatoLocal_Callback")
@@ -391,6 +409,7 @@ sub NeatoLocal_Poll($) {
     $hash->{VERSION} = $NeatoLocal_VERSION;
 
     return NeatoLocal_RestartTimer($hash) if (IsDisabled($name));
+    return undef if ($hash->{TRANSPORT} eq "none");
 
     if ($hash->{TRANSPORT} ne "http" && $hash->{STATE} eq "disconnected") {
         NeatoLocal_RestartTimer($hash);
@@ -412,6 +431,9 @@ sub NeatoLocal_Enqueue($$;$$) {
     my $name = $hash->{NAME};
 
     return "device is disabled" if (IsDisabled($name));
+    return "no address configured -- flash the bridge first, or give one with "
+         . "'modify $name <host:port>'"
+        if ($hash->{TRANSPORT} eq "none");
     return "no command given"   if (!defined($cmd) || $cmd eq "");
 
     push @{$hash->{helper}{queue}}, {
@@ -1567,6 +1589,28 @@ sub NeatoLocal_ProvisionDone($) {
     readingsBulkUpdate($hash, "bridgeAddress", $detail);
     readingsEndUpdate($hash, 1);
 
+    # A device defined without an address was waiting for exactly this. Point it
+    # at the bridge that just came up, so the whole path from a blank board to a
+    # working device needs no hand-edited definition.
+    #
+    # A device that already has an address keeps it: silently repointing a
+    # working device would be the wrong kind of helpful.
+    if ($hash->{TRANSPORT} eq "none" && $detail =~ m/^\d+\.\d+\.\d+\.\d+$/) {
+        Log3 $name, 3, "NeatoLocal ($name) - pointing the device at $detail:23";
+        my $err = CommandModify(undef, "$name $detail:23");
+        if ($err) {
+            Log3 $name, 1, "NeatoLocal ($name) - could not set the address: $err";
+        }
+        else {
+            Log3 $name, 2, "NeatoLocal ($name) - address set to $detail:23. "
+                         . "Run 'save' to keep it across a restart.";
+        }
+    }
+    elsif ($hash->{TRANSPORT} ne "none") {
+        Log3 $name, 3, "NeatoLocal ($name) - the device keeps its address; "
+                     . "change it with 'modify $name $detail:23' if wanted";
+    }
+
     return undef;
 }
 
@@ -1630,6 +1674,7 @@ sub NeatoLocal_LeaveTestMode($) {
     my ($hash) = @_;
 
     return undef if (!$hash->{helper}{testMode});
+    return undef if ($hash->{TRANSPORT} eq "none");
     return undef if ($hash->{TRANSPORT} ne "http" && $hash->{STATE} eq "disconnected");
 
     # never leave the robot deaf to its own buttons. This runs on shutdown and
@@ -1688,13 +1733,18 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocaldefine"></a>
   <b>Define</b>
   <ul>
-    <code>define &lt;name&gt; NeatoLocal &lt;serialDevice|host:port|http://host&gt;</code><br><br>
+    <code>define &lt;name&gt; NeatoLocal [serialDevice|host:port|http://host]</code><br><br>
     Examples:<br>
     <ul>
       <code>define Staubsauger NeatoLocal /dev/ttyACM0@115200</code><br>
       <code>define Staubsauger NeatoLocal 192.168.1.42:23</code><br>
       <code>define Staubsauger NeatoLocal http://neato.local</code><br>
+      <code>define Staubsauger NeatoLocal</code> - no bridge yet<br>
     </ul>
+    Without an address the device stays in the state <i>unconfigured</i>: it
+    does not connect and does not poll, but flashESP and wifiESP work. When
+    wifiESP reports the address the bridge came up on, the device points itself
+    at it. Follow that with a <code>save</code>.
   </ul><br>
 
   <a name="NeatoLocalset"></a>
@@ -1854,13 +1904,18 @@ sub NeatoLocal_LeaveTestMode($) {
   <a name="NeatoLocaldefine"></a>
   <b>Define</b>
   <ul>
-    <code>define &lt;name&gt; NeatoLocal &lt;serielles Geraet|host:port|http://host&gt;</code><br><br>
+    <code>define &lt;name&gt; NeatoLocal [serielles Geraet|host:port|http://host]</code><br><br>
     Beispiele:<br>
     <ul>
       <code>define Staubsauger NeatoLocal /dev/ttyACM0@115200</code><br>
       <code>define Staubsauger NeatoLocal 192.168.1.42:23</code><br>
       <code>define Staubsauger NeatoLocal http://neato.local</code><br>
+      <code>define Staubsauger NeatoLocal</code> - noch keine Bruecke<br>
     </ul>
+    Ohne Adresse bleibt das Geraet im Zustand <i>unconfigured</i>: es verbindet
+    sich nicht und fragt nichts ab, flashESP und wifiESP funktionieren aber.
+    Sobald wifiESP die Adresse meldet, unter der die Bruecke hochgekommen ist,
+    stellt sich das Geraet selbst darauf um. Danach ein <code>save</code>.
   </ul><br>
 
   <a name="NeatoLocalset"></a>

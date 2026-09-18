@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 154;
+use Test::More tests => 167;
 
 package main;
 
@@ -38,6 +38,9 @@ sub HttpUtils_NonblockingGet { }
 
 our @BLOCKING;
 sub BlockingCall          { push @BLOCKING, [@_]; return { }; }
+
+our @MODIFIED;
+sub CommandModify         { push @MODIFIED, $_[1]; return undef; }
 sub HttpUtils_BlockingGet    { push @WRITTEN, "http:" . $_[0]->{url}; return ("", ""); }
 sub asyncOutput             { }
 sub urlEncode               { my $s = shift; $s =~ s/([^A-Za-z0-9\-\._~])/sprintf("%%%02X", ord($1))/ge; return $s; }
@@ -87,8 +90,9 @@ is($h->{TRANSPORT}, "tcp", "tcp transport detected");
 is($h->{TRANSPORT}, "http", "http transport detected");
 is($h->{URL}, "http://neato.local", "trailing slash stripped from URL");
 
-($h, $ret) = mkdev("nt NeatoLocal");
-like($ret, qr/Usage/, "wrong argument count is rejected");
+# an address of "none" is the written-out form of leaving it off
+($h, $ret) = mkdev("nt NeatoLocal none");
+is($h->{TRANSPORT}, "none", "the literal none means no address either");
 
 # --- echo stripping and CSV parsing ---------------------------------------
 # Every fixture below is verbatim console output of a BotVac D6 Connected
@@ -290,6 +294,51 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- a device may exist before its bridge does --------------------------------
+# Otherwise there is no way in: flashESP needs a device, and a device would
+# need the address of a bridge that has not been flashed yet.
+{
+    my ($uh, $ur) = mkdev("un NeatoLocal");
+    is($ur, undef, "a define without an address is accepted");
+    is($uh->{TRANSPORT}, "none", "and leaves the transport open");
+    is(ReadingsVal("un", "state", ""), "unconfigured", "the state says so");
+    is($uh->{DeviceName}, undef, "nothing is opened");
+
+    like(NeatoLocal_Enqueue($uh, "GetVersion"), qr/flash the bridge first/,
+         "talking to the robot is refused with a hint");
+    is(NeatoLocal_Init($uh), undef, "initialising does nothing");
+    is(NeatoLocal_Ready($uh), undef, "and no connection is attempted");
+
+    # provisioning reports where the bridge came up -- that is the address
+    @MODIFIED = ();
+    $uh->{helper}{flashRunning} = 1;
+    NeatoLocal_ProvisionDone("un|OK|192.168.1.57");
+    is($MODIFIED[0], "un 192.168.1.57:23", "the device points itself at the bridge");
+    is(ReadingsVal("un", "bridgeAddress", ""), "192.168.1.57", "and records it");
+
+    # a device that already has an address keeps it
+    my ($ch, $cr) = mkdev("cfg NeatoLocal 192.168.1.42:23");
+    @MODIFIED = ();
+    $ch->{helper}{flashRunning} = 1;
+    NeatoLocal_ProvisionDone("cfg|OK|192.168.1.99");
+    is(scalar(@MODIFIED), 0, "a configured device is not silently repointed");
+    is(ReadingsVal("cfg", "bridgeAddress", ""), "192.168.1.99",
+       "though the new address is still reported");
+
+    # anything that is not an address must not end up in the definition
+    @MODIFIED = ();
+    $uh->{TRANSPORT} = "none";
+    $uh->{helper}{flashRunning} = 1;
+    NeatoLocal_ProvisionDone("un|OK|no answer from the board");
+    is(scalar(@MODIFIED), 0, "a reply without an address changes no definition");
+
+    like(NeatoLocal_Define($uh, "un NeatoLocal a b c"), qr/Usage/,
+         "too many arguments are still rejected");
+
+    delete $defs{"un"};
+    delete $defs{"cfg"};
+}
 
 # --- flashing the bridge -----------------------------------------------------
 # The work happens in a forked child, so the set only has to hand over the
