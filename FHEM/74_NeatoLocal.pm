@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.9.0";
+my $NeatoLocal_VERSION = "0.10.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -66,6 +66,7 @@ my %NeatoLocal_sets = (
 
 my %NeatoLocal_gets = (
     "help"      => "textField",
+    "serialPorts" => "noArg",
     "raw"       => "textField",
     "version"   => "noArg",
     "charger"   => "noArg",
@@ -1415,6 +1416,80 @@ sub NeatoLocal_FindEsptool() {
     return "";
 }
 
+# Which serial ports are there, and what is behind them? Both the robot and an
+# ESP32-C3 show up as /dev/ttyACM*, so the bare device name says nothing about
+# which is which -- the stable by-id names do.
+sub NeatoLocal_ScanSerialPorts(;$$) {
+    my ($byid, $devdir) = @_;
+    $byid   = "/dev/serial/by-id" if (!defined($byid));
+    $devdir = "/dev"              if (!defined($devdir));
+
+    my @found;
+    my %seen;
+
+    if (opendir(my $dh, $byid)) {
+        foreach my $entry (sort readdir($dh)) {
+            next if ($entry =~ m/^\.\.?$/);
+            my $link = readlink("$byid/$entry");
+            my $target = $link;
+            if (defined($target)) {
+                $target =~ s/.*\///;    # ../../ttyACM0 -> ttyACM0
+                $seen{$target} = 1;
+            }
+            $target = defined($target) ? "$devdir/$target" : "?";
+
+            # Most specific first: an ESP32's own name mentions a serial
+            # device too, so a plain "usb serial" test would swallow it.
+            my $what = "unknown";
+            if ($entry =~ m/espressif|jtag.serial.debug/i) {
+                $what = "ESP32 (native USB)";
+            }
+            elsif ($entry =~ m/neato|vorwerk|botvac/i) {
+                $what = "Neato robot";
+            }
+            elsif ($entry =~ m/ch340|1a86|cp210|10c4|ft232|0403|pl2303|usb.?serial/i) {
+                $what = "USB-serial adapter";
+            }
+
+            push @found, { port => $target, id => "$byid/$entry", what => $what };
+        }
+        closedir($dh);
+    }
+
+    # ports without a by-id entry still deserve a mention
+    if (opendir(my $dh, $devdir)) {
+        foreach my $entry (sort readdir($dh)) {
+            next if ($entry !~ m/^tty(ACM|USB)\d+$/);
+            next if ($seen{$entry});
+            push @found, { port => "$devdir/$entry", id => "-", what => "unknown" };
+        }
+        closedir($dh);
+    }
+
+    return \@found;
+}
+
+sub NeatoLocal_FormatSerialPorts($) {
+    my ($ports) = @_;
+
+    return "No serial ports found. Plug the board in, then look at "
+         . "'dmesg | tail' -- a port that never appears is usually a "
+         . "charge-only cable."
+        if (!@$ports);
+
+    my $out = "";
+    foreach my $p (@$ports) {
+        $out .= sprintf("%-16s %s\n", $p->{port}, $p->{what});
+        $out .= sprintf("%-16s %s\n", "", $p->{id}) if ($p->{id} ne "-");
+    }
+
+    $out .= "\nThe by-id name stays the same across reboots and does not care "
+          . "which USB socket is used, so it is the better thing to put into "
+          . "espPort or a define.\n";
+
+    return $out;
+}
+
 # Refuse to write something that is not an ESP firmware image. Every such image
 # starts with the magic byte 0xE9, and a merged one for the C3 is around a
 # megabyte -- a truncated download or an HTML error page fails both tests.
@@ -1635,9 +1710,16 @@ sub NeatoLocal_Get($@) {
         return "Unknown argument $cmd, choose one of $list";
     }
 
-    return "device is disabled" if (IsDisabled($name));
+    return "device is disabled"
+        if (IsDisabled($name) && $cmd ne "serialPorts");
 
     my $cl = $hash->{CL};
+
+    # Answered here, not by the robot -- and useful precisely when no device is
+    # configured yet.
+    if ($cmd eq "serialPorts") {
+        return NeatoLocal_FormatSerialPorts(NeatoLocal_ScanSerialPorts());
+    }
 
     if ($cmd eq "help") {
         my $arg = join(" ", @args);
@@ -1797,6 +1879,9 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>help [command]</b> - returns the robot's own command list. Use this
         to verify the console syntax of your firmware.</li>
     <li><b>raw &lt;command&gt;</b> - sends a command and returns its output</li>
+    <li><b>serialPorts</b> - lists the serial ports the machine has, with their
+        stable by-id names and a guess at what is behind each. Answered locally,
+        so it works before any bridge exists.</li>
     <li><b>version</b>, <b>charger</b>, <b>motors</b>, <b>sensors</b>,
         <b>usage</b>, <b>settings</b>, <b>wifiStatus</b></li>
   </ul><br>
@@ -1970,6 +2055,13 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>help [Kommando]</b> - liefert die Kommandoliste des Roboters. Damit
         laesst sich die Syntax der eigenen Firmware pruefen.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein Kommando und gibt die Ausgabe zurueck</li>
+    <li><b>serialPorts</b> - lists the serial ports the machine has, with their
+        stable by-id names and a guess at what is behind each. Answered locally,
+        so it works before any bridge exists.</li>
+    <li><b>serialPorts</b> - listet die seriellen Schnittstellen des Rechners
+        mit ihren gleichbleibenden by-id-Namen und einer Vermutung, was
+        dahintersteckt. Wird lokal beantwortet und funktioniert daher auch,
+        bevor es eine Bruecke gibt.</li>
     <li><b>version</b>, <b>charger</b>, <b>motors</b>, <b>sensors</b>,
         <b>usage</b>, <b>settings</b>, <b>wifiStatus</b></li>
   </ul><br>

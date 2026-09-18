@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 167;
+use Test::More tests => 178;
 
 package main;
 
@@ -294,6 +294,45 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- finding the right serial port -------------------------------------------
+# Both an ESP32-C3 and the robot appear as /dev/ttyACM*, so the bare number
+# says nothing. The by-id names do, and they are what this has to surface.
+{
+    my $root = "/tmp/.neato_ports";
+    system("rm -rf $root; mkdir -p $root/byid $root/dev");
+    system("touch $root/dev/ttyACM0 $root/dev/ttyACM1 $root/dev/ttyUSB0 $root/dev/random");
+    symlink("../../ttyACM0", "$root/byid/usb-Espressif_USB_JTAG_serial_debug_unit_AA-if00");
+    symlink("../../ttyACM1", "$root/byid/usb-Neato_Robotics_Botvac-if00");
+    symlink("../../ttyUSB0", "$root/byid/usb-1a86_USB_Serial-if00-port0");
+
+    my $ports = NeatoLocal_ScanSerialPorts("$root/byid", "$root/dev");
+    is(scalar(@$ports), 3, "every port is listed once");
+
+    my %by = map { $_->{port} => $_ } @$ports;
+    is($by{"$root/dev/ttyACM0"}{what}, "ESP32 (native USB)", "the C3 is recognised");
+    is($by{"$root/dev/ttyACM1"}{what}, "Neato robot", "the robot is recognised");
+    is($by{"$root/dev/ttyUSB0"}{what}, "USB-serial adapter", "a CH340 adapter is recognised");
+    like($by{"$root/dev/ttyACM0"}{id}, qr/Espressif/, "the stable name is reported");
+
+    # a port without a by-id entry must not disappear
+    symlink("nowhere", "$root/byid/broken") if (0);
+    unlink("$root/byid/usb-Neato_Robotics_Botvac-if00");
+    $ports = NeatoLocal_ScanSerialPorts("$root/byid", "$root/dev");
+    %by = map { $_->{port} => $_ } @$ports;
+    is($by{"$root/dev/ttyACM1"}{what}, "unknown", "a port without a by-id entry is still listed");
+    is($by{"$root/dev/ttyACM1"}{id}, "-", "and says it has no stable name");
+    ok(!exists($by{"$root/dev/random"}), "files that are not serial ports are ignored");
+
+    my $text = NeatoLocal_FormatSerialPorts($ports);
+    like($text, qr/ttyACM0/, "the listing names the ports");
+    like($text, qr/by-id/, "and points at the stable names");
+
+    like(NeatoLocal_FormatSerialPorts([]), qr/charge-only cable/,
+         "an empty machine gets a useful hint instead of a blank answer");
+
+    system("rm -rf $root");
+}
 
 # --- a device may exist before its bridge does --------------------------------
 # Otherwise there is no way in: flashESP needs a device, and a device would

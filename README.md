@@ -143,6 +143,7 @@ und sendet bei Shutdown, Löschen und `disable` immer `TestMode Off`.
 | `warranty` | Lebensdauerzähler |
 | `settings` | Benutzereinstellungen |
 | `motors`, `sensors`, `usage`, `wifiStatus` | Rohdaten |
+| `serialPorts` | serielle Schnittstellen des Rechners mit ihren by-id-Namen |
 | `raw <Kommando>` | beliebiges Konsolenkommando |
 
 ### Brücke aus FHEM heraus einrichten
@@ -152,8 +153,34 @@ ohne Arduino-Installation und ohne dass die Zugangsdaten in der Firmware
 stehen. Voraussetzung ist `esptool` (`pip3 install esptool` oder das
 gleichnamige Paket der Distribution) und ein Board am USB-Port.
 
-Der Ablauf von einem nackten Board bis zum laufenden Gerät, ohne dass
-zwischendurch eine Definition von Hand angepasst werden muss:
+### Den richtigen Port finden
+
+Ein ESP32-C3 **und** der Roboter melden sich beide als `/dev/ttyACM*` – die
+Nummer allein sagt also nichts darüber aus, was dahintersteckt. Das Modul
+beantwortet die Frage selbst, auch ohne konfigurierte Brücke:
+
+```
+get Staubsauger serialPorts
+```
+
+```
+/dev/ttyACM0     ESP32 (native USB)
+                 /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_9C-if00
+/dev/ttyACM1     Neato robot
+                 /dev/serial/by-id/usb-Neato_Robotics_Botvac_D6-if00
+```
+
+Der **by-id-Name** ist die bessere Angabe für `espPort` oder ein `define`: er
+bleibt über Neustarts gleich und hängt nicht daran, in welcher USB-Buchse das
+Gerät steckt. Auf der Kommandozeile zeigt `ls -l /dev/serial/by-id/` dasselbe,
+und `dmesg | tail` direkt nach dem Einstecken nennt den gerade vergebenen Namen.
+
+Erscheint gar kein Port, ist es meist ein reines Ladekabel ohne Datenleitungen.
+
+### Von einem nackten Board zum laufenden Gerät
+
+Der Ablauf, ohne dass zwischendurch eine Definition von Hand angepasst werden
+muss:
 
 ```
 define Staubsauger NeatoLocal
