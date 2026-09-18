@@ -63,11 +63,35 @@ class Client:
         self.sock.close()
 
 
-def main():
+# Every server started here, so they can be stopped in an orderly way at the
+# end. A handler thread still writing its "client gone" line while the
+# interpreter is already shutting down aborts the whole process -- after the
+# checks have passed, which makes it look like a test failure.
+SERVERS = []
+
+
+def start_server(robot):
     server = neato_sim.Server(("127.0.0.1", 0), neato_sim.Handler)
-    server.robot = neato_sim.Robot()
-    host, port = server.server_address
+    server.robot = robot
+    # Not daemon threads: server_close() then waits for the handlers instead of
+    # leaving them to race the interpreter.
+    server.daemon_threads = False
+    server.block_on_close = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    SERVERS.append(server)
+    return server
+
+
+def stop_servers():
+    for server in SERVERS:
+        server.shutdown()
+        server.server_close()
+    del SERVERS[:]
+
+
+def main():
+    server = start_server(neato_sim.Robot())
+    host, port = server.server_address
 
     c = Client(host, port)
 
@@ -128,10 +152,8 @@ def main():
     c.close()
 
     # the USB variant has to reproduce error 220
-    usb = neato_sim.Server(("127.0.0.1", 0), neato_sim.Handler)
-    usb.robot = neato_sim.Robot(usb_attached=True)
+    usb = start_server(neato_sim.Robot(usb_attached=True))
     uhost, uport = usb.server_address
-    threading.Thread(target=usb.serve_forever, daemon=True).start()
 
     u = Client(uhost, uport)
     u.send("Clean House")
@@ -199,6 +221,8 @@ def main():
     check(warranty.get("CumulativeBatteryCycles") == "05c2",
           "GetWarranty reports the battery cycles as hex")
     c.close()
+
+    stop_servers()
 
     print()
     if FAILED:
