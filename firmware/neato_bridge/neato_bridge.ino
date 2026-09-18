@@ -81,7 +81,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.5.0";
+static const char *VERSION = "0.6.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -161,6 +161,23 @@ static bool configSave(const String &ssid, const String &psk) {
 #endif
 }
 
+// Read the credentials straight back out of the store. Saving reports success
+// even when the partition is full or missing, and a board that silently keeps
+// nothing looks exactly like a wrong password after the next restart.
+static bool configVerify(const String &ssid, const String &psk) {
+#if HAVE_CONFIG_STORE
+  prefs.begin("neato", true);
+  String storedSsid = prefs.getString("ssid", "");
+  String storedPsk = prefs.getString("psk", "");
+  prefs.end();
+  return storedSsid == ssid && storedPsk == psk;
+#else
+  (void)ssid;
+  (void)psk;
+  return false;
+#endif
+}
+
 static void configClear() {
 #if HAVE_CONFIG_STORE
   prefs.begin("neato", false);
@@ -225,6 +242,28 @@ static void handOverSerial() {
 #endif
 }
 
+// What the board can actually see. A network that only exists on 5 GHz, and a
+// board whose antenna barely reaches the router, both look exactly like a
+// wrong password from the outside -- the scan tells them apart.
+static void scanNetworks() {
+  if (!debugUsable) {
+    return;
+  }
+  int found = WiFi.scanNetworks();
+  if (found <= 0) {
+    Serial.println(F("scan: nothing in range (2.4 GHz only -- a 5 GHz network stays invisible)"));
+    return;
+  }
+  for (int i = 0; i < found; i++) {
+    Serial.print(F("scan: "));
+    Serial.print(WiFi.SSID(i));
+    Serial.print(F("  "));
+    Serial.print(WiFi.RSSI(i));
+    Serial.println(F(" dBm"));
+  }
+  WiFi.scanDelete();
+}
+
 // Opens the setup access point. When credentials exist the station side is
 // kept alive alongside it: a router that is briefly away, or comes back on a
 // different channel, must not strand the board in access point mode until
@@ -252,9 +291,15 @@ static void setupWifi() {
   configLoad();
 
   if (wifiSsid.length() == 0) {
+    dbg(F("no network configured"));
     startAccessPoint(false);
     return;
   }
+
+  // The stored name, not the compile-time default: which of the two is in use
+  // is exactly the question when the board does not come up on the network.
+  dbg(String(F("connecting to '")) + wifiSsid + F("' (")
+      + (int)wifiPsk.length() + F(" character password)"));
 
   apMode = false;
   WiFi.persistent(false);
@@ -284,6 +329,9 @@ static void setupWifi() {
   // A wrong password should not leave the board unreachable for good -- but
   // neither should a router that simply took its time.
   if (WiFi.status() != WL_CONNECTED) {
+    // 1 = name not found, 4 = rejected (usually the password), 6 = given up.
+    dbg(String(F("no connection, WiFi.status() = ")) + (int)WiFi.status());
+    scanNetworks();
     startAccessPoint(true);
   }
 }
@@ -310,6 +358,7 @@ static void consoleHandle(const String &line) {
     Serial.println(F("wifi psk <password>  set the password"));
     Serial.println(F("wifi save            store both and reconnect"));
     Serial.println(F("wifi status          show what is configured"));
+    Serial.println(F("wifi scan            list the networks in range"));
     Serial.println(F("wifi clear           forget the stored credentials"));
     Serial.println(F("info                 version, IP and MAC"));
     Serial.println(F("restart              reboot the board"));
@@ -356,6 +405,12 @@ static void consoleHandle(const String &line) {
         Serial.println(F("ERR ssid missing or too long"));
         return;
       }
+      // Read them back before the restart. Afterwards an empty store and a
+      // wrong password are indistinguishable from the outside.
+      if (!configVerify(wifiSsid, wifiPsk)) {
+        Serial.println(F("ERR storage did not keep the credentials"));
+        return;
+      }
       // Restart instead of reconnecting in place. The TCP server, mDNS and OTA
       // were all brought up against the previous network state, and rather
       // than re-initialising each of them by hand, a restart does it properly
@@ -369,7 +424,14 @@ static void consoleHandle(const String &line) {
     if (rest.equalsIgnoreCase("status")) {
       Serial.print(F("ssid ")); Serial.println(wifiSsid);
       Serial.print(F("psk ")); Serial.println(wifiPsk.length() ? F("set") : F("empty"));
+      Serial.print(F("stored ")); Serial.println(configVerify(wifiSsid, wifiPsk) ? 1 : 0);
       Serial.print(F("connected ")); Serial.println(WiFi.status() == WL_CONNECTED ? 1 : 0);
+      Serial.print(F("rssi ")); Serial.println(WiFi.RSSI());
+      return;
+    }
+    if (rest.equalsIgnoreCase("scan")) {
+      scanNetworks();
+      Serial.println(F("OK scan done"));
       return;
     }
     if (rest.equalsIgnoreCase("clear")) {
@@ -648,7 +710,6 @@ void setup() {
 
   dbg("");
   dbg(String(F("neato_bridge ")) + VERSION);
-  dbg(String(F("connecting to ")) + WIFI_SSID);
 
   setupWifi();
 

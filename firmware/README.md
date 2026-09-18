@@ -65,6 +65,12 @@ Die Zugangsdaten stehen **nicht** im Image. Ein frisch geflashtes Board nimmt si
 oder über den Access Point `neato-setup`, den es ohne gespeicherte Daten öffnet.
 Aus FHEM heraus erledigen das `set <dev> flashESP` und `set <dev> wifiESP`.
 
+Kommt das Board danach nicht im Netz an, beantworten zwei Konsolenkommandos die
+Frage, woran es liegt: `wifi status` zeigt, welcher Name gespeichert ist, ob er
+den Neustart überstanden hat und wie stark der Empfang ist; `wifi scan` listet
+die 2,4-GHz-Netze, die das Board von seinem Platz aus sieht. Taucht das eigene
+Netz dort nicht auf, ist nicht das Passwort schuld. `help` listet alle Kommandos.
+
 ## Selbst flashen
 
 **Roboter dabei nicht angeschlossen.**

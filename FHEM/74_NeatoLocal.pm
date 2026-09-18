@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.0";
+my $NeatoLocal_VERSION = "0.11.1";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1593,6 +1593,39 @@ sub NeatoLocal_FlashAborted($) {
 # Sends the credentials to the freshly flashed board over its USB port, using
 # the little configuration console the firmware provides. One line per value so
 # both may contain spaces.
+# Send one line to the bridge console and collect what comes back, up to the
+# line that ends the answer or the timeout. Runs inside BlockingCall only --
+# it blocks on the serial port.
+sub NeatoLocal_ConsoleAsk($$$$) {
+    my ($port, $cmd, $stop, $timeout) = @_;
+
+    return "" if (!-e $port || !-w $port);
+
+    system("stty -F " . quotemeta($port) . " 115200 cs8 -cstopb -parenb "
+         . "-crtscts -ixon -ixoff raw -echo >/dev/null 2>&1");
+
+    my $fh;
+    return "" if (!open($fh, "+<", $port));
+    my $old = select($fh); $| = 1; select($old);
+
+    print $fh "\n$cmd\n";
+
+    my $reply = "";
+    eval {
+        local $SIG{ALRM} = sub { die "timeout\n" };
+        alarm($timeout);
+        while (my $line = <$fh>) {
+            $reply .= $line;
+            last if ($line =~ $stop);
+        }
+        alarm(0);
+    };
+    alarm(0);
+    close($fh);
+
+    return $reply;
+}
+
 sub NeatoLocal_ProvisionBlocking($) {
     my ($string) = @_;
     my ($name, $port, $ssid, $psk) = split("\\|", $string, 4);
@@ -1675,10 +1708,21 @@ sub NeatoLocal_ProvisionBlocking($) {
     my ($mode) = ($reply =~ m/\bmode\s+(\w+)/);
 
     # 192.168.4.1 is the setup access point: saved, but not on the network.
-    return "$name|credentials stored, but the board could not join the network "
-         . "-- it opened the setup access point instead. Check name and "
-         . "password, and remember it is 2.4 GHz only."
-        if (!defined($ip) || (defined($mode) && lc($mode) eq "ap"));
+    if (!defined($ip) || (defined($mode) && lc($mode) eq "ap")) {
+        # Ask the board what it can see. A network missing from that list is
+        # either out of reach or 5 GHz only, and neither is a typo in the
+        # password -- which is what everybody checks first.
+        my $scan = NeatoLocal_ConsoleAsk($port, "wifi scan",
+                                         qr/OK scan done|nothing in range/, 15);
+        my @seen = ($scan =~ m/^scan:\s+(.*?)\s+-?\d+ dBm\s*$/mg);
+
+        my $hint = @seen ? " In range: " . join(", ", @seen) . "."
+                 : " The board sees no 2.4 GHz network at all from where it is.";
+
+        return "$name|credentials stored, but the board could not join the "
+             . "network -- it opened the setup access point instead. Check "
+             . "name and password, and remember it is 2.4 GHz only.$hint";
+    }
 
     return "$name|OK|$ip";
 }

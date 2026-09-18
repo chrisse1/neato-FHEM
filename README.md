@@ -248,8 +248,15 @@ ist der verlässlichere Weg – Webserver, mDNS und OTA werden sauber neu
 aufgesetzt – und beweist nebenbei, dass die Zugangsdaten den Neustart
 überstanden haben. `wifiESP` wartet den Neustart ab und fragt danach die
 Adresse ab; meldet das Board dann den Access Point statt einer Adresse im
-Heimnetz, waren Name oder Passwort falsch (oder es ist ein 5-GHz-Netz, das der
-C3 nicht kann).
+Heimnetz, fragt es zusätzlich `wifi scan` ab und hängt die Netze, die das Board
+von seinem Platz aus sieht, an die Meldung in `lastFlash` an. Fehlt das eigene
+Netz in dieser Liste, liegt es nicht am Passwort: dann ist es entweder zu weit
+weg oder ein 5-GHz-Netz, das der C3 nicht kann.
+
+`wifi save` liest die Zugangsdaten vor dem Neustart wieder aus dem Flash zurück
+und meldet `ERR storage did not keep the credentials`, wenn dort nichts
+angekommen ist. Sonst sähe ein leerer Speicher nach dem Neustart genauso aus
+wie ein falsches Passwort.
 
 Scheitert das Verbinden im laufenden Betrieb, öffnet das Board den Access Point
 **zusätzlich** zur Station-Seite und versucht weiter, das konfigurierte Netz zu
