@@ -157,8 +157,26 @@ Vorsicht bei der Auswertung: alle diese Namen enthalten `CLEAN`. Wer darauf
 prüft, hält einen unterbrochenen oder abgeschlossenen Lauf für eine laufende
 Reinigung.
 
+### Lebensdauerzähler
+
+`GetWarranty` liefert drei Felder fester Breite, alle hexadezimal – erkennbar
+am `ValidationCode` daneben und an `05c2`:
+
+```
+CumulativeCleaningTimeInSecs,00192364   → 1 647 460 s = 457,6 h
+CumulativeBatteryCycles,05c2            → 1474 Ladezyklen
+ValidationCode,c2cc3e78
+```
+
+`GetUsage` taugt **nicht** zur Gegenprobe: auf einem D6 mit Jahren Laufzeit
+meldet es `Total cleaned area: 0`, seine Zähler werden also offenbar nicht
+gepflegt. Die Werte aus `GetWarranty` sind die verlässlicheren.
+
 ### Weitere
 
+* `GetCharger info` – statische Daten der Smart Battery (Hersteller,
+  Nennkapazität, Nennspannung). `GetCharger data` liefert die dynamischen
+  Werte und damit den tatsächlichen Zustand des Akkus.
 * `GetRobotPos Raw` / `GetRobotPos Smooth` – Position des Roboters
 * `SetUIError clearall` – alle Meldungen quittieren
 

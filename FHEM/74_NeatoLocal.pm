@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.6.0";
+my $NeatoLocal_VERSION = "0.6.1";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -442,7 +442,8 @@ sub NeatoLocal_SendNext($) {
 
     if ($hash->{STATE} eq "disconnected") {
         Log3 $name, 4, "NeatoLocal ($name) - not connected, dropping '" . $entry->{cmd} . "'";
-        asyncOutput($entry->{cl}, "NeatoLocal: not connected") if ($entry->{cl});
+        asyncOutput($entry->{cl}, NeatoLocal_WebSafe("NeatoLocal: not connected"))
+            if ($entry->{cl});
         return undef;
     }
 
@@ -474,7 +475,8 @@ sub NeatoLocal_Timeout($) {
 
     readingsSingleUpdate($hash, "lastError", "timeout on '" . $entry->{cmd} . "'", 1);
     NeatoLocal_UpdateState($hash);
-    asyncOutput($entry->{cl}, "NeatoLocal: timeout waiting for '" . $entry->{cmd} . "'")
+    asyncOutput($entry->{cl},
+        NeatoLocal_WebSafe("NeatoLocal: timeout waiting for '" . $entry->{cmd} . "'"))
         if ($entry->{cl});
 
     $hash->{helper}{buffer} = "";
@@ -518,7 +520,8 @@ sub NeatoLocal_HttpDone($$$) {
         readingsBulkUpdate($hash, "lastError", $err);
         readingsBulkUpdate($hash, "state", "disconnected");
         readingsEndUpdate($hash, 1);
-        asyncOutput($param->{entry}{cl}, "NeatoLocal: $err") if ($param->{entry}{cl});
+        asyncOutput($param->{entry}{cl}, NeatoLocal_WebSafe("NeatoLocal: $err"))
+            if ($param->{entry}{cl});
         NeatoLocal_SendNext($hash);
         return undef;
     }
@@ -561,7 +564,8 @@ sub NeatoLocal_Dispatch($$;$) {
         Log3 $name, 2, "NeatoLocal ($name) - parser error: $@" if ($@);
     }
 
-    asyncOutput($entry->{cl}, ($body ne "") ? $body : "(no output)") if ($entry->{cl});
+    asyncOutput($entry->{cl},
+        NeatoLocal_WebSafe(($body ne "") ? $body : "(no output)")) if ($entry->{cl});
 
     NeatoLocal_SendNext($hash);
 
@@ -571,6 +575,30 @@ sub NeatoLocal_Dispatch($$;$) {
 ##############################################################################
 # response parsing
 ##############################################################################
+
+# FHEMWEB pastes an asynchronous answer into a JavaScript call as
+# FW_okDialog('...'). A console response contains line breaks and can contain
+# quotes and backslashes, each of which breaks that string literal -- the
+# browser then reports a syntax error and shows nothing at all.
+#
+# Everything dangerous is therefore turned into HTML entities rather than
+# escaped: entities survive whichever escaping FHEMWEB applies on top, where a
+# backslash escape of our own could end up doubled.
+sub NeatoLocal_WebSafe($) {
+    my ($text) = @_;
+
+    $text = "" if (!defined($text));
+
+    $text =~ s/&/&amp;/g;
+    $text =~ s/</&lt;/g;
+    $text =~ s/>/&gt;/g;
+    $text =~ s/'/&#39;/g;
+    $text =~ s/"/&quot;/g;
+    $text =~ s/\\/&#92;/g;
+    $text =~ s/\r\n|\r|\n/<br>/g;
+
+    return "<html>" . $text . "</html>";
+}
 
 sub NeatoLocal_StripEcho($$) {
     my ($cmd, $raw) = @_;

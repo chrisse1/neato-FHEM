@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 112;
+use Test::More tests => 121;
 
 package main;
 
@@ -286,6 +286,24 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- answers must not break FHEMWEB ------------------------------------------
+# FHEMWEB pastes the answer into FW_okDialog('...'). A raw line break in there
+# is a JavaScript syntax error and the dialog stays empty, which is what a
+# multi-line console answer used to cause.
+my $safe = NeatoLocal_WebSafe("Label,Value\r\nDesign Capacity mA,4200\n");
+unlike($safe, qr/[\r\n]/, "no line breaks survive into the JavaScript string");
+like($safe, qr/<br>/, "line breaks become HTML instead");
+like($safe, qr/^<html>.*<\/html>$/, "the answer is marked up as HTML");
+
+$safe = NeatoLocal_WebSafe("it's a \\ backslash and <tag> & ampersand");
+unlike($safe, qr/'/, "quotes cannot terminate the string literal");
+unlike($safe, qr/\\/, "backslashes cannot escape anything");
+like($safe, qr/&#39;/, "the quote survives as an entity");
+like($safe, qr/&lt;tag&gt;/, "markup in the answer is not interpreted");
+like($safe, qr/&amp; ampersand/, "the ampersand is escaped once, not twice");
+
+is(NeatoLocal_WebSafe(undef), "<html></html>", "an undefined answer is handled");
 
 # --- lifetime counters -------------------------------------------------------
 # Verbatim GetWarranty output of the D6. The values are hex: the validation
