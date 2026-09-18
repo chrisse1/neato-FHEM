@@ -451,6 +451,33 @@ def handle_command(robot, line):
             robot.settings[match[0]] = value
         return ""
 
+    if low.startswith("getcharger info"):
+        return "\n".join([
+            "Label,Value",
+            "Manufacturer Name, Panasonic",
+            "Device Chemistry, LION1",
+            "Capacity Mode, mA",
+            "Design Capacity mA,4200",
+            "Design Voltage,14400",
+        ])
+
+    if low.startswith("getcharger data"):
+        # capacity fades with the cycle count, so the health reading has
+        # something to move
+        full = max(400, 4200 - 2 * 1484)
+        return "\n".join([
+            "Label,Value",
+            "Voltage mV,%d" % int(14000 + state["fuel"] * 23),
+            "Current mA,0",
+            "Temperature deciC,26600",
+            "Relative State of Charge( batt_full%% ),%d" % state["fuel"],
+            "Remaining Capacity mA,%d" % int(full * state["fuel"] / 100),
+            "Full Charge Capacity mA,%d" % full,
+            "Cycle Count,1484",
+            "Status,640",
+            "Error,0",
+        ])
+
     if low == "getwarranty":
         return "\n".join([
             "Item,Value",

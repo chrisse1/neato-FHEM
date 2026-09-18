@@ -150,9 +150,18 @@ Readings: `state`
 `error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `uiState`,
 `robotState`, `commandApi`, `model`, `serialNumber`, `firmware`, `ldsSoftware`.
 
-`batteryCycles` und `cleaningHours` kommen aus `GetWarranty` und sagen, wie
-viel das Gerät hinter sich hat – hilfreich, um einen müde gewordenen Akku
-einzuschätzen.
+**`batteryHealth`** ist das Reading, das Ärger vorhersagt: die Restkapazität
+des Akkus in Prozent seiner Nennkapazität, gemessen von der Elektronik im Akku
+selbst. Dazu `batteryCapacityFull`, `batteryCapacityDesign`,
+`batteryTemperature`, `batteryCycles` und `cleaningHours`.
+
+Unterhalb von etwa 50 % schafft es ein Roboter zunehmend nicht mehr zurück zur
+Basis – er bleibt unterwegs stehen, obwohl die Ladeanzeige eben noch brauchbar
+aussah. Eine Warnung dafür ist ein Dreizeiler:
+
+```
+define di_akku DOIF ([Staubsauger:batteryHealth] < 50) (set Nachricht ...)
+```
 
 Aus `GetUserSettings` kommen zusätzlich `ecoMode`, `intenseClean`,
 `binFullDetect`, `wallFollower`, `clickSounds`, `melodySounds`,

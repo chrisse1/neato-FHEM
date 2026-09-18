@@ -174,9 +174,17 @@ gepflegt. Die Werte aus `GetWarranty` sind die verlässlicheren.
 
 ### Weitere
 
-* `GetCharger info` – statische Daten der Smart Battery (Hersteller,
-  Nennkapazität, Nennspannung). `GetCharger data` liefert die dynamischen
-  Werte und damit den tatsächlichen Zustand des Akkus.
+* `GetCharger info` – statische Daten der Smart Battery: Hersteller,
+  `Design Capacity mA`, `Design Voltage`.
+* `GetCharger data` – die Messwerte des Akkus selbst: `Full Charge Capacity mA`,
+  `Remaining Capacity mA`, `Cycle Count`, Spannung, Strom, Temperatur.
+  **`Full Charge Capacity` geteilt durch `Design Capacity` ist der Verschleiß**
+  und damit die einzige belastbare Aussage über den Akku.
+  Die Temperatur steht trotz der Beschriftung `deciC` in Milligrad – dieselbe
+  Einheit, die `GetAnalogSensors` mit `mC` korrekt benennt.
+  Der `Cycle Count` des Akkus bestätigt nebenbei die hexadezimale Lesart von
+  `GetWarranty`: 1484 gegenüber 0x05c2 = 1474, gemessen mit zehn Ladungen
+  Abstand.
 * `GetRobotPos Raw` / `GetRobotPos Smooth` – Position des Roboters
 * `SetUIError clearall` – alle Meldungen quittieren
 

@@ -188,6 +188,13 @@ def main():
           "an unknown setting is refused")
     c.send("SetUserSettings EcoMode OFF")
 
+    info = c.csv("GetCharger info")
+    check(info.get("Design Capacity mA") == "4200", "GetCharger info gives the design capacity")
+    data = c.csv("GetCharger data")
+    check(data.get("Full Charge Capacity mA") == "1232",
+          "GetCharger data gives the current capacity")
+    check(data.get("Cycle Count") == "1484", "and the pack's cycle count")
+
     warranty = c.csv("GetWarranty")
     check(warranty.get("CumulativeBatteryCycles") == "05c2",
           "GetWarranty reports the battery cycles as hex")

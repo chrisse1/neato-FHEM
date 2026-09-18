@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.6.1";
+my $NeatoLocal_VERSION = "0.7.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -72,6 +72,7 @@ my %NeatoLocal_gets = (
     "state"     => "noArg",
     "usage"     => "noArg",
     "warranty"  => "noArg",
+    "battery"   => "noArg",
     "settings"  => "noArg",
     "wifiStatus"=> "noArg",
 );
@@ -295,6 +296,9 @@ sub NeatoLocal_Init($) {
     NeatoLocal_Enqueue($hash, "GetVersion", \&NeatoLocal_ParseVersion);
     NeatoLocal_Enqueue($hash, "GetUserSettings", \&NeatoLocal_ParseUserSettings);
     NeatoLocal_Enqueue($hash, "GetWarranty", \&NeatoLocal_ParseWarranty);
+    # info carries the design capacity, data the current one; health needs both
+    NeatoLocal_Enqueue($hash, "GetCharger info", \&NeatoLocal_ParseBattery);
+    NeatoLocal_Enqueue($hash, "GetCharger data", \&NeatoLocal_ParseBattery);
     NeatoLocal_StatusRequest($hash);
     NeatoLocal_RestartTimer($hash);
 
@@ -937,6 +941,50 @@ sub NeatoLocal_ParseWarranty($$$) {
     return undef;
 }
 
+# "GetCharger data" asks the smart battery's own gauge rather than the robot.
+# Full Charge Capacity against Design Capacity is the state of health, and it
+# is the one number that says whether a robot will still make it home.
+sub NeatoLocal_ParseBattery($$$) {
+    my ($hash, $entry, $body) = @_;
+    my $v = NeatoLocal_ParseCsv($body);
+
+    my $design = $v->{"Design Capacity mA"};
+    my $full   = $v->{"Full Charge Capacity mA"};
+
+    return undef if (!defined($full));
+
+    readingsBeginUpdate($hash);
+
+    readingsBulkUpdateIfChanged($hash, "batteryCapacityFull", $full);
+    readingsBulkUpdateIfChanged($hash, "batteryCapacityDesign", $design)
+        if (defined($design));
+
+    # The design capacity only comes with "GetCharger info", so fall back to
+    # the value a previous poll stored.
+    $design = ReadingsVal($hash->{NAME}, "batteryCapacityDesign", 0)
+        if (!defined($design));
+
+    if ($design && $design =~ m/^\d+$/ && $design > 0 && $full =~ m/^\d+$/) {
+        readingsBulkUpdateIfChanged($hash, "batteryHealth",
+            sprintf("%.0f", $full / $design * 100));
+    }
+
+    # the pack counts its own cycles, which beats the robot's tally
+    readingsBulkUpdateIfChanged($hash, "batteryCycles", $v->{"Cycle Count"})
+        if (defined($v->{"Cycle Count"}) && $v->{"Cycle Count"} =~ m/^\d+$/);
+
+    # despite the label the value is in milli-degrees, as GetAnalogSensors
+    # reports the same temperature with an mC unit
+    readingsBulkUpdateIfChanged($hash, "batteryTemperature",
+        sprintf("%.1f", $v->{"Temperature deciC"} / 1000))
+        if (defined($v->{"Temperature deciC"})
+            && $v->{"Temperature deciC"} =~ m/^-?\d+$/);
+
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
 sub NeatoLocal_ParseUserSettings($$$) {
     my ($hash, $entry, $body) = @_;
 
@@ -1300,6 +1348,7 @@ sub NeatoLocal_Get($@) {
         "state"      => [ "GetState",         \&NeatoLocal_ParseState   ],
         "usage"      => [ "GetUsage",         undef                     ],
         "warranty"   => [ "GetWarranty",      \&NeatoLocal_ParseWarranty ],
+        "battery"    => [ "GetCharger data",  \&NeatoLocal_ParseBattery  ],
         "settings"   => [ "GetUserSettings",  \&NeatoLocal_ParseUserSettings ],
         "wifiStatus" => [ "GetWifiStatus",    undef                     ],
     );
@@ -1461,8 +1510,12 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>filterChangeTime</b>, <b>brushChangeTime</b>, <b>dirtBinInterval</b>,
         <b>scheduleEnabled</b>, <b>scheduledCleanings</b> - from
         GetUserSettings, fetched on connect and after every change</li>
-    <li><b>batteryCycles</b>, <b>cleaningHours</b> - lifetime counters from
-        GetWarranty. Useful for judging a tired battery.</li>
+    <li><b>batteryHealth</b> - the pack's remaining capacity as a percentage of
+        its design capacity, from the smart battery's own gauge. Below roughly
+        50% a robot starts failing to make it back to the base.</li>
+    <li><b>batteryCapacityFull</b>, <b>batteryCapacityDesign</b>,
+        <b>batteryTemperature</b>, <b>batteryCycles</b>, <b>cleaningHours</b> -
+        the rest of the battery and lifetime figures</li>
     <li><b>uiState</b>, <b>robotState</b> - what the robot reports about
         itself, e.g. UIMGR_STATE_STANDBY and ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent or legacy, depending on whether the event
@@ -1612,8 +1665,13 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>filterChangeTime</b>, <b>brushChangeTime</b>, <b>dirtBinInterval</b>,
         <b>scheduleEnabled</b>, <b>scheduledCleanings</b> - aus
         GetUserSettings, beim Verbinden und nach jeder Aenderung geholt</li>
-    <li><b>batteryCycles</b>, <b>cleaningHours</b> - Lebensdauerzaehler aus
-        GetWarranty. Brauchbar, um einen muede gewordenen Akku einzuschaetzen.</li>
+    <li><b>batteryHealth</b> - Restkapazitaet des Akkus in Prozent seiner
+        Nennkapazitaet, aus der Messelektronik des Akkus selbst. Unterhalb von
+        etwa 50 Prozent schafft es ein Roboter zunehmend nicht mehr zurueck zur
+        Basis.</li>
+    <li><b>batteryCapacityFull</b>, <b>batteryCapacityDesign</b>,
+        <b>batteryTemperature</b>, <b>batteryCycles</b>, <b>cleaningHours</b> -
+        die uebrigen Akku- und Lebensdauerwerte</li>
     <li><b>uiState</b>, <b>robotState</b> - was der Roboter ueber sich selbst
         meldet, z. B. UIMGR_STATE_STANDBY und ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent oder legacy, je nachdem ob sich die

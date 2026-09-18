@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 121;
+use Test::More tests => 128;
 
 package main;
 
@@ -304,6 +304,35 @@ like($safe, qr/&lt;tag&gt;/, "markup in the answer is not interpreted");
 like($safe, qr/&amp; ampersand/, "the ampersand is escaped once, not twice");
 
 is(NeatoLocal_WebSafe(undef), "<html></html>", "an undefined answer is handled");
+
+# --- battery health ----------------------------------------------------------
+# Verbatim "GetCharger data" of a worn out D6 pack, and "GetCharger info" for
+# the design capacity it does not carry itself.
+NeatoLocal_ParseBattery($h, { cmd => "GetCharger info" },
+    "Label,Value\r\nManufacturer Name, Panasonic\r\nDevice Chemistry, LION1\r\n"
+  . "Capacity Mode, mA\r\nDesign Capacity mA,4200\r\nDesign Voltage,14400\r\n"
+  . "Full Charge Capacity mA,764\r\n");
+is(ReadingsVal("nt", "batteryCapacityDesign", ""), "4200", "design capacity parsed");
+
+NeatoLocal_ParseBattery($h, { cmd => "GetCharger data" },
+    "Label,Value\r\nVoltage mV,15272\r\nCurrent mA,1987\r\n"
+  . "Temperature deciC,26600\r\nRelative State of Charge( batt_full% ),10\r\n"
+  . "Remaining Capacity mA,76\r\nFull Charge Capacity mA,764\r\n"
+  . "Cycle Count,1484\r\nStatus,640\r\nREMAINING_CAPACITY_ALARM,1\r\nError,0\r\n");
+is(ReadingsVal("nt", "batteryCapacityFull", ""), "764", "full charge capacity parsed");
+is(ReadingsVal("nt", "batteryHealth", ""), "18", "state of health computed from both");
+is(ReadingsVal("nt", "batteryCycles", ""), "1484", "the pack's own cycle count wins");
+is(ReadingsVal("nt", "batteryTemperature", ""), "26.6",
+   "temperature read as milli-degrees despite the deciC label");
+
+# a healthy pack
+NeatoLocal_ParseBattery($h, { cmd => "GetCharger data" },
+    "Full Charge Capacity mA,4100\r\nCycle Count,12\r\n");
+is(ReadingsVal("nt", "batteryHealth", ""), "98", "a fresh pack reports near full health");
+
+# an answer without the capacity must not produce a bogus health figure
+NeatoLocal_ParseBattery($h, { cmd => "GetCharger data" }, "Voltage mV,15272\r\n");
+is(ReadingsVal("nt", "batteryHealth", ""), "98", "an incomplete answer changes nothing");
 
 # --- lifetime counters -------------------------------------------------------
 # Verbatim GetWarranty output of the D6. The values are hex: the validation
