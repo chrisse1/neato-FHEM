@@ -111,13 +111,16 @@ jobs:
 
       - name: Commit if the image changed
         run: |
-          if git diff --quiet -- firmware/prebuilt/neato_bridge-esp32c3.bin; then
-            echo "image unchanged"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add firmware/prebuilt/
+          # Compared against the index, not the working tree: a file that is new
+          # rather than modified does not appear in a plain diff at all, so the
+          # first build would have reported "unchanged" and thrown the image away.
+          if git diff --cached --quiet; then
+            echo "image unchanged"
+            exit 0
+          fi
           git commit -m "Rebuild the flashable ESP32-C3 image [skip ci]"
           git push
 
@@ -140,12 +143,12 @@ jobs:
 
       - name: Commit if it changed
         run: |
-          if git diff --quiet -- controls_neatolocal.txt; then
-            echo "index already matches the modules"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add controls_neatolocal.txt
+          if git diff --cached --quiet; then
+            echo "index already matches the modules"
+            exit 0
+          fi
           git commit -m "Update the FHEM update index [skip ci]"
           git push
