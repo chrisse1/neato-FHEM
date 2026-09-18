@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.5";
+my $NeatoLocal_VERSION = "0.11.6";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1624,10 +1624,21 @@ sub NeatoLocal_ScanVerdict($$;$) {
     $status = "" if (!defined($status));
 
     my @seen;
-    while ($scan =~ m/^scan:\s+(.*?)\s\s+(-?\d+) dBm\s+ch (\d+)/mg) {
-        push @seen, "$1 ($2 dBm, ch $3)";
+    my %enc;
+    while ($scan =~ m/^scan:\s+(.*?)\s\s+(-?\d+) dBm\s+ch (\d+)(?:\s+enc (\S+))?/mg) {
+        my ($net, $dbm, $ch, $mode) = ($1, $2, $3, $4);
+        push @seen, "$net ($dbm dBm, ch $ch" . (defined($mode) ? ", $mode" : "") . ")";
+        $enc{$mode} = 1 if (defined($mode) && $net eq $ssid);
     }
     my $list = @seen ? " In range: " . join(", ", @seen) . "." : "";
+
+    # Refused during authentication, on a network that runs WPA3 or the mixed
+    # mode: that pairing is a known sore point, and it is worth naming before
+    # anybody goes looking through the router's device list again.
+    my $wpa3 = (grep { m/WPA3/ } keys %enc) ? " '$ssid' runs " . join("/", sort keys %enc)
+             . " -- the WPA3 handshake is the first thing to rule out here; "
+             . "setting the access point to WPA2 for one attempt settles it."
+             : "";
 
     # The board's own reason code beats every inference drawn from the scan:
     # it comes from the association attempt itself.
@@ -1659,8 +1670,8 @@ sub NeatoLocal_ScanVerdict($$;$) {
             if ($reason == 2);
 
         return "'$ssid' turned the board away (reason $reason: "
-             . NeatoLocal_ReasonText($reason) . "). That is the router "
-             . "declining the client, not the name or the password.$got$list"
+             . NeatoLocal_ReasonText($reason) . "), during authentication and "
+             . "thus before the password is ever checked.$wpa3$got$list"
             if ($reason == 202 || $reason == 203);
 
         return "the board did not find '$ssid' on the air (reason $reason). "

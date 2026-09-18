@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 202;
+use Test::More tests => 205;
 
 package main;
 
@@ -696,9 +696,9 @@ is($h->{helper}{testMode}, 0, "test mode flag cleared");
 # Verbatim shape of what the bridge prints, so a change to the firmware's
 # wording shows up here rather than in a user's error message.
 my $scan_missing = <<'OUT';
-scan: Vodafone-F4D4  -72 dBm  ch 1  enc 3
-scan: Vodafone Hotspot  -74 dBm  ch 1  enc 0
-scan: Chefetage  -81 dBm  ch 11  enc 3
+scan: Vodafone-F4D4  -72 dBm  ch 1  enc WPA2
+scan: Vodafone Hotspot  -74 dBm  ch 1  enc open
+scan: Chefetage  -81 dBm  ch 11  enc WPA2
 scan: configured network 'WaxWeazle' is NOT among them -- no password reaches a name that is not on the air on 2.4 GHz
 OK scan done
 OUT
@@ -707,12 +707,14 @@ my $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing);
 like($verdict, qr/not on the air/, "a missing name is named as the cause");
 unlike($verdict, qr/Check name and password/,
        "and the password is not offered as a possibility any more");
-like($verdict, qr/Vodafone-F4D4 \(-72 dBm, ch 1\)/, "the scan list carries level and channel");
-like($verdict, qr/Vodafone Hotspot \(-74 dBm, ch 1\)/, "a name with a space survives the parse");
+like($verdict, qr/Vodafone-F4D4 \(-72 dBm, ch 1, WPA2\)/,
+     "the scan list carries level, channel and encryption");
+like($verdict, qr/Vodafone Hotspot \(-74 dBm, ch 1, open\)/,
+     "a name with a space survives the parse");
 
 my $scan_present = <<'OUT';
-scan: WaxWeazle  -58 dBm  ch 6  enc 3
-scan: configured network 'WaxWeazle' is there, channel 6, -58 dBm, enc 3
+scan: WaxWeazle  -58 dBm  ch 6  enc WPA2
+scan: configured network 'WaxWeazle' is there, channel 6, -58 dBm, enc WPA2
 OK scan done
 OUT
 
@@ -750,7 +752,8 @@ like($verdict, qr/did not find 'WaxWeazle'/, "reason 201 names a missing network
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, "ssid x\nreason 203 association refused\n");
 like($verdict, qr/reason 203: association refused/, "another code is named, not guessed at");
-like($verdict, qr/declining the client/, "and placed at the router, not the password");
+like($verdict, qr/before the password is ever checked/,
+     "and placed before the password check, where reason 202 happens");
 
 # Reason 2 is "previous authentication no longer valid" -- ambiguous, and the
 # one that sent this search after a password that was already correct.
@@ -762,6 +765,26 @@ unlike($verdict, qr/refused the password/, "it is not reported as a refusal eith
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, "ssid x\nreason 77\n");
 like($verdict, qr/reason 77: unknown/, "an unknown code keeps its number");
+
+# The case from the field: the network is plainly there, strong, and refuses
+# during authentication -- with WPA3 in the mix.
+my $scan_wpa3 = <<'OUT';
+scan: WaxWeazle  -38 dBm  ch 6  enc WPA2/WPA3
+scan: Chefetage  -75 dBm  ch 1  enc WPA2
+scan: configured network 'WaxWeazle' is there, channel 6, -38 dBm, enc WPA2/WPA3
+OK scan done
+OUT
+
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_wpa3,
+                                  "ssid WaxWeazle\npsk 16 characters\nmac 44:B1:76:19:7A:CC\nreason 202\n");
+like($verdict, qr/WPA3 handshake is the first thing to rule out/,
+     "WPA3 on the refusing network is named");
+like($verdict, qr/WaxWeazle \(-38 dBm, ch 6, WPA2\/WPA3\)/,
+     "and the reading it rests on is shown");
+
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_present,
+                                  "ssid WaxWeazle\nreason 202\n");
+unlike($verdict, qr/WPA3/, "a WPA2 network is not accused of a WPA3 problem");
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, $status_none);
 like($verdict, qr/not on the air/, "with no reason recorded the scan decides again");

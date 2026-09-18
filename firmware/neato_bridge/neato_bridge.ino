@@ -93,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.9.1";
+static const char *VERSION = "0.10.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -334,6 +334,32 @@ static void applyRegulatoryDomain() {
 // board whose antenna barely reaches the router, both look exactly like a
 // wrong password from the outside -- the scan tells them apart.
 //
+// The SDKs number the modes differently, so the board resolves them rather
+// than leaving a number for somebody else to look up wrongly.
+static const __FlashStringHelper *encryptionName(int index) {
+#if defined(ARDUINO_ARCH_ESP8266)
+  switch (WiFi.encryptionType(index)) {
+    case ENC_TYPE_NONE: return F("open");
+    case ENC_TYPE_WEP:  return F("WEP");
+    case ENC_TYPE_TKIP: return F("WPA");
+    case ENC_TYPE_CCMP: return F("WPA2");
+    case ENC_TYPE_AUTO: return F("WPA/WPA2");
+    default:            return F("?");
+  }
+#else
+  switch (WiFi.encryptionType(index)) {
+    case WIFI_AUTH_OPEN:          return F("open");
+    case WIFI_AUTH_WEP:           return F("WEP");
+    case WIFI_AUTH_WPA_PSK:       return F("WPA");
+    case WIFI_AUTH_WPA2_PSK:      return F("WPA2");
+    case WIFI_AUTH_WPA_WPA2_PSK:  return F("WPA/WPA2");
+    case WIFI_AUTH_WPA3_PSK:      return F("WPA3");
+    case WIFI_AUTH_WPA2_WPA3_PSK: return F("WPA2/WPA3");
+    default:                      return F("?");
+  }
+#endif
+}
+
 static void startAccessPoint(bool keepTrying, bool announce = true);
 
 // Both radio users have to get out of the way first, or the result is a list
@@ -400,7 +426,7 @@ static void scanNetworks() {
       Serial.print(F(" dBm  ch "));
       Serial.print(WiFi.channel(i));
       Serial.print(F("  enc "));
-      Serial.println((int)WiFi.encryptionType(i));
+      Serial.println(encryptionName(i));
     }
 
     // The one comparison worth spelling out. A name that is not on the air
@@ -415,7 +441,7 @@ static void scanNetworks() {
         Serial.print(F(", "));
         Serial.print(WiFi.RSSI(configuredAt));
         Serial.print(F(" dBm, enc "));
-        Serial.println((int)WiFi.encryptionType(configuredAt));
+        Serial.println(encryptionName(configuredAt));
       }
       else {
         Serial.print(F("scan: configured network '"));
