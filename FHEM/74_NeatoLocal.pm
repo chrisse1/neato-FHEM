@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.7.0";
+my $NeatoLocal_VERSION = "0.7.1";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -162,7 +162,7 @@ sub NeatoLocal_Initialize($) {
     $hash->{ReadyFn}    = "NeatoLocal_Ready";
 
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
-                      . "interval timeout "
+                      . "interval timeout connectTimeout "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -199,6 +199,13 @@ sub NeatoLocal_Define($$) {
         $dev .= "\@115200" if ($dev =~ m/^\// && $dev !~ m/\@/);
         $hash->{TRANSPORT}  = ($dev =~ m/^\//) ? "serial" : "tcp";
         $hash->{DeviceName} = $dev;
+
+        # DevIo opens a TCP connection synchronously, so an unreachable bridge
+        # stalls all of FHEM until the connect times out. The bridge is powered
+        # from the robot, so it disappears whenever the robot does -- with
+        # DevIo's default of 3 seconds that is a visible hiccup every time FHEM
+        # retries.
+        $hash->{TIMEOUT} = AttrVal($name, "connectTimeout", 2);
     }
 
     Log3 $name, 3, "NeatoLocal ($name) - defined, transport "
@@ -246,6 +253,18 @@ sub NeatoLocal_Attr(@) {
                 if (!defined($attrVal) || $attrVal !~ m/^\d+$/ || $attrVal < 10);
         }
         NeatoLocal_RestartTimer($hash, ($cmd eq "set") ? $attrVal : 60);
+    }
+
+    if ($attrName eq "connectTimeout") {
+        if ($cmd eq "set") {
+            return "connectTimeout must be a number between 1 and 10 (seconds)"
+                if (!defined($attrVal) || $attrVal !~ m/^\d+$/
+                    || $attrVal < 1 || $attrVal > 10);
+            $hash->{TIMEOUT} = $attrVal;
+        }
+        else {
+            $hash->{TIMEOUT} = 2;
+        }
     }
 
     if ($attrName eq "timeout" && $cmd eq "set") {
@@ -1481,6 +1500,10 @@ sub NeatoLocal_LeaveTestMode($) {
   <ul>
     <li><b>interval</b> - polling interval in seconds, default 60</li>
     <li><b>timeout</b> - response timeout in seconds, default 10</li>
+    <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
+        take, default 2 seconds. FHEM opens TCP connections synchronously, so
+        this is the longest FHEM can stall while the bridge is unreachable --
+        which it is whenever the robot is off, since it powers the bridge.</li>
     <li><b>pollErrors</b> - poll GetErr, default 1</li>
     <li><b>pollSettings</b> - also poll GetUserSettings every cycle, default 0.
         They are read on connect and after every change anyway.</li>
@@ -1634,6 +1657,11 @@ sub NeatoLocal_LeaveTestMode($) {
   <ul>
     <li><b>interval</b> - Abfrageintervall in Sekunden, Standard 60</li>
     <li><b>timeout</b> - Antwort-Timeout in Sekunden, Standard 10</li>
+    <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
+        dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
+        auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,
+        solange die Bruecke nicht erreichbar ist - und das ist sie immer dann
+        nicht, wenn der Roboter aus ist, denn er versorgt sie.</li>
     <li><b>pollErrors</b> - GetErr mit abfragen, Standard 1</li>
     <li><b>pollSettings</b> - GetUserSettings bei jedem Durchlauf mitfragen,
         Standard 0. Beim Verbinden und nach jeder Aenderung werden sie ohnehin

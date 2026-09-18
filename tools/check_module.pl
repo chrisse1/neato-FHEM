@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 128;
+use Test::More tests => 134;
 
 package main;
 
@@ -65,8 +65,9 @@ like($init{AttrList}, qr/cmdSendToBase/, "AttrList contains the command mapping 
 # --- helper: build a device ------------------------------------------------
 sub mkdev {
     my ($def) = @_;
-    my $hash = { NAME => "nt", STATE => "opened" };
-    $defs{"nt"} = $hash;
+    my ($name) = split(" ", $def);          # FHEM names the device in the DEF
+    my $hash = { NAME => $name, STATE => "opened" };
+    $defs{$name} = $hash;
     my $ret = NeatoLocal_Define($hash, $def);
     return ($hash, $ret);
 }
@@ -286,6 +287,25 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- an unreachable bridge must not stall FHEM for long ----------------------
+# FHEM opens TCP connections synchronously; DevIo's default of 3 seconds is
+# long enough to be felt, and the bridge vanishes whenever the robot is off.
+my ($ht, $hr) = mkdev("nt2 NeatoLocal 192.168.1.42:23");
+is($ht->{TIMEOUT}, 2, "a TCP device bounds the connect timeout");
+
+$attr{"nt2"}{connectTimeout} = 5;
+($ht, $hr) = mkdev("nt2 NeatoLocal 192.168.1.42:23");
+is($ht->{TIMEOUT}, 5, "the attribute raises it");
+
+is(NeatoLocal_Attr("set", "nt2", "connectTimeout", "4"), undef, "a sane value is accepted");
+is($defs{"nt2"}{TIMEOUT}, 4, "and takes effect at once");
+like(NeatoLocal_Attr("set", "nt2", "connectTimeout", "99"), qr/between/,
+     "an absurd value is rejected");
+NeatoLocal_Attr("del", "nt2", "connectTimeout", undef);
+is($defs{"nt2"}{TIMEOUT}, 2, "deleting it restores the default");
+delete $attr{"nt2"};
+delete $defs{"nt2"};
 
 # --- answers must not break FHEMWEB ------------------------------------------
 # FHEMWEB pastes the answer into FW_okDialog('...'). A raw line break in there

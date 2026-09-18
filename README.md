@@ -262,6 +262,24 @@ Mit `--usb` verhält sich der Simulator wie ein Roboter mit angestecktem
 USB-Host und verweigert die Reinigung mit Fehler 220 – damit lässt sich der
 Fehlerpfad testen, ohne ihn provozieren zu müssen.
 
+## Wenn FHEM kurz stehenbleibt
+
+FHEM baut TCP-Verbindungen **synchron** auf: solange ein Verbindungsversuch
+läuft, steht der ganze Prozess. Die Brücke hängt am Strom des Roboters und
+verschwindet mit ihm – ist er aus oder der Akku leer, versucht FHEM in
+Abständen erneut zu verbinden und bleibt dabei jedes Mal kurz stehen.
+
+Das Modul begrenzt diesen Versuch auf 2 Sekunden statt der 3 Sekunden, die
+FHEM voreinstellt; über `attr <dev> connectTimeout` lässt sich das weiter
+senken. Ganz vermeiden lässt es sich nicht, solange die Brücke unerreichbar
+ist – `attr <dev> disable 1` schaltet es ab, wenn der Roboter länger aus
+bleibt.
+
+Wer wissen will, was genau bremst: `apptime` in der FHEM-Kommandozeile zeigt
+pro Funktion die längste Laufzeit. Erscheint dort `NeatoLocal_Ready` oder
+`DevIo_OpenDev` mit mehreren hundert Millisekunden, ist es der Verbindungs-
+aufbau. Zurücksetzen mit `apptime clear`.
+
 ## Konsole des eigenen Roboters auslesen
 
 `tools/dump_robot.py` fragt den Roboter nach seiner Kommandoliste, holt zu jedem
