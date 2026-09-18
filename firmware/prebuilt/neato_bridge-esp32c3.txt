@@ -1,8 +1,8 @@
-neato_bridge 0.9.1
+neato_bridge 0.11.0
 board:  ESP32-C3 (fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,FlashSize=4M)
-built:  2026-09-18 20:28:41 UTC
-commit: 52c8e6cf3571a1b5f88e11a9d8a32dab54f75618
-sha256: e053720fefafec99ff32e0018e5ca5f2fc186d616491e2183cf29df35e1beae7
+built:  2026-09-18 20:42:37 UTC
+commit: 01c4232d902614fd80491dc63008658b0b6f5f9b
+sha256: 84db8da1131be4563396a1b975b0ebe0fb9df1bc377f51720bcb1ddbde32c11c
 
 Write it to offset 0:
   esptool.py --chip esp32c3 -p /dev/ttyACM0 write_flash 0x0 neato_bridge-esp32c3.bin
