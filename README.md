@@ -243,6 +243,19 @@ Wer nicht vom FHEM-Rechner aus flasht: ein Board ohne gespeicherte Zugangsdaten
 Kommandos nimmt die Firmware auch über ein Terminal am USB-Port entgegen
 (`help` listet sie).
 
+Nach `wifi save` **startet das Board neu**, statt im Betrieb umzuschalten. Das
+ist der verlässlichere Weg – Webserver, mDNS und OTA werden sauber neu
+aufgesetzt – und beweist nebenbei, dass die Zugangsdaten den Neustart
+überstanden haben. `wifiESP` wartet den Neustart ab und fragt danach die
+Adresse ab; meldet das Board dann den Access Point statt einer Adresse im
+Heimnetz, waren Name oder Passwort falsch (oder es ist ein 5-GHz-Netz, das der
+C3 nicht kann).
+
+Scheitert das Verbinden im laufenden Betrieb, öffnet das Board den Access Point
+**zusätzlich** zur Station-Seite und versucht weiter, das konfigurierte Netz zu
+erreichen. Ein Router, der kurz weg ist, strandet es also nicht bis zum nächsten
+Stromausfall.
+
 ## Readings
 
 ### Zustand

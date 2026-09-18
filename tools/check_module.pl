@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 178;
+use Test::More tests => 180;
 
 package main;
 
@@ -425,6 +425,16 @@ is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
     is(ReadingsVal("fl", "lastFlash", ""), "ok", "a successful flash is recorded");
     is($fh->{helper}{flashRunning}, undef, "and the run is marked finished");
 
+    # the failure messages have to say what to do, not just that it failed
+    NeatoLocal_ProvisionDone("fl|credentials stored, but the board could not "
+                           . "join the network -- it opened the setup access "
+                           . "point instead.");
+    like(ReadingsVal("fl", "lastFlash", ""), qr/wifi: credentials stored/,
+         "a board that saved but could not join says so");
+    is(ReadingsVal("fl", "bridgeAddress", ""), "",
+       "and no address is recorded for it");
+
+    $fh->{helper}{flashRunning} = 1;
     NeatoLocal_ProvisionDone("fl|OK|192.168.1.57");
     is(ReadingsVal("fl", "bridgeAddress", ""), "192.168.1.57",
        "provisioning reports the address the bridge took");

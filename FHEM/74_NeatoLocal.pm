@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.10.0";
+my $NeatoLocal_VERSION = "0.11.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1614,32 +1614,73 @@ sub NeatoLocal_ProvisionBlocking($) {
     print $fh "wifi psk $psk\n";
     print $fh "wifi save\n";
 
-    # give the board a moment to reconnect, then read what it says
-    my $reply = "";
-    my $deadline = time() + 25;
+    # The board restarts after saving, so the answer we care about comes from
+    # the boot after it -- which is also the proof that the credentials were
+    # really stored rather than just accepted.
+    my $saved = 0;
     eval {
         local $SIG{ALRM} = sub { die "timeout\n" };
-        alarm(25);
-        while (time() < $deadline) {
-            my $line = <$fh>;
-            last if (!defined($line));
-            $reply .= $line;
-            last if ($line =~ m/^ip\s+\S+/);
+        alarm(10);
+        while (my $line = <$fh>) {
+            $saved = 1 if ($line =~ m/OK saved/i);
+            last if ($saved);
+            return "$name|the board rejected the credentials: $line"
+                if ($line =~ m/^ERR/i);
         }
         alarm(0);
     };
     alarm(0);
     close($fh);
 
+    return "$name|no answer -- is the board running the bridge firmware?"
+        if (!$saved);
+
+    # Wait out the restart, then ask where it ended up. The USB port goes away
+    # and comes back with it, so the port is reopened rather than kept.
+    my $reply = "";
+    foreach my $attempt (1 .. 6) {
+        sleep(3);
+        next if (!-e $port);
+
+        system("stty -F " . quotemeta($port) . " 115200 cs8 -cstopb -parenb "
+             . "-crtscts -ixon -ixoff raw -echo >/dev/null 2>&1");
+        next if (!open($fh, "+<", $port));
+
+        my $old2 = select($fh); $| = 1; select($old2);
+        print $fh "\ninfo\n";
+
+        eval {
+            local $SIG{ALRM} = sub { die "timeout\n" };
+            alarm(8);
+            while (my $line = <$fh>) {
+                $reply .= $line;
+                last if ($line =~ m/^mode\s+\S+/);
+            }
+            alarm(0);
+        };
+        alarm(0);
+        close($fh);
+
+        last if ($reply =~ m/\bip\s+\d+\.\d+\.\d+\.\d+/);
+        $reply = "";
+    }
+
     $reply =~ s/\s+/ /g;
     $reply =~ s/^\s+|\s+$//g;
 
-    return "$name|no answer -- is the board running the bridge firmware?"
+    return "$name|saved, but the board did not report back after restarting"
         if ($reply eq "");
 
-    my $ip = ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/) ? $1 : "";
+    my ($ip) = ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/);
+    my ($mode) = ($reply =~ m/\bmode\s+(\w+)/);
 
-    return "$name|OK|" . (($ip ne "") ? $ip : $reply);
+    # 192.168.4.1 is the setup access point: saved, but not on the network.
+    return "$name|credentials stored, but the board could not join the network "
+         . "-- it opened the setup access point instead. Check name and "
+         . "password, and remember it is 2.4 GHz only."
+        if (!defined($ip) || (defined($mode) && lc($mode) eq "ap"));
+
+    return "$name|OK|$ip";
 }
 
 sub NeatoLocal_ProvisionDone($) {

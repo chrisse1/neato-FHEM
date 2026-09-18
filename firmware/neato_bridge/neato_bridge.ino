@@ -81,7 +81,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.4.0";
+static const char *VERSION = "0.5.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -225,15 +225,26 @@ static void handOverSerial() {
 #endif
 }
 
-// No credentials to try: open an access point so the board can be configured
-// from a phone. The serial console is the other way in, and the one FHEM uses.
-static void startAccessPoint() {
+// Opens the setup access point. When credentials exist the station side is
+// kept alive alongside it: a router that is briefly away, or comes back on a
+// different channel, must not strand the board in access point mode until
+// somebody walks over and power-cycles it. With AP_STA the SDK keeps retrying
+// the network in the background and the access point is only a way back in.
+static void startAccessPoint(bool keepTrying) {
   apMode = true;
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(keepTrying ? WIFI_AP_STA : WIFI_AP);
   WiFi.softAP("neato-setup");
+
+  if (keepTrying) {
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
+  }
+
   if (debugUsable) {
-    Serial.print(F("no credentials stored -- access point 'neato-setup' at "));
-    Serial.println(WiFi.softAPIP());
+    Serial.print(F("access point 'neato-setup' at "));
+    Serial.print(WiFi.softAPIP());
+    Serial.println(keepTrying ? F(" -- still trying the configured network")
+                              : F(" -- no credentials stored"));
   }
 }
 
@@ -241,7 +252,7 @@ static void setupWifi() {
   configLoad();
 
   if (wifiSsid.length() == 0) {
-    startAccessPoint();
+    startAccessPoint(false);
     return;
   }
 
@@ -270,9 +281,10 @@ static void setupWifi() {
     Serial.println();
   }
 
-  // A wrong password should not leave the board unreachable for good.
+  // A wrong password should not leave the board unreachable for good -- but
+  // neither should a router that simply took its time.
   if (WiFi.status() != WL_CONNECTED) {
-    startAccessPoint();
+    startAccessPoint(true);
   }
 }
 
@@ -344,13 +356,14 @@ static void consoleHandle(const String &line) {
         Serial.println(F("ERR ssid missing or too long"));
         return;
       }
-      Serial.println(F("OK saved, reconnecting"));
+      // Restart instead of reconnecting in place. The TCP server, mDNS and OTA
+      // were all brought up against the previous network state, and rather
+      // than re-initialising each of them by hand, a restart does it properly
+      // -- and proves in passing that the credentials really survived.
+      Serial.println(F("OK saved, restarting"));
       Serial.flush();
-      WiFi.disconnect(true);
-      delay(100);
-      setupWifi();
-      Serial.print(F("ip "));
-      Serial.println(apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+      delay(200);
+      ESP.restart();
       return;
     }
     if (rest.equalsIgnoreCase("status")) {
