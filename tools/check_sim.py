@@ -187,6 +187,10 @@ def main():
     check(c.send("SetUserSettings Nonsense ON").startswith("Unknown setting"),
           "an unknown setting is refused")
     c.send("SetUserSettings EcoMode OFF")
+
+    warranty = c.csv("GetWarranty")
+    check(warranty.get("CumulativeBatteryCycles") == "05c2",
+          "GetWarranty reports the battery cycles as hex")
     c.close()
 
     print()

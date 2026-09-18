@@ -150,6 +150,10 @@ Readings: `state`
 `error`/`errorCode`, `alert`/`alertCode`, `usbConnected`, `uiState`,
 `robotState`, `commandApi`, `model`, `serialNumber`, `firmware`, `ldsSoftware`.
 
+`batteryCycles` und `cleaningHours` kommen aus `GetWarranty` und sagen, wie
+viel das Gerät hinter sich hat – hilfreich, um einen müde gewordenen Akku
+einzuschätzen.
+
 Aus `GetUserSettings` kommen zusätzlich `ecoMode`, `intenseClean`,
 `binFullDetect`, `wallFollower`, `clickSounds`, `melodySounds`,
 `warningSounds`, `led`, `wifiEnabled`, `language`, `filterChangeTime`,

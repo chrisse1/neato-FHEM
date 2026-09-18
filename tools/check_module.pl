@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 109;
+use Test::More tests => 112;
 
 package main;
 
@@ -286,6 +286,18 @@ isnt(ReadingsVal("nt", "state", ""), "cleaning", "a finished run is not cleaning
 NeatoLocal_ParseState($h, { cmd => "GetState" }, "nothing useful here");
 is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
    "an unparseable answer leaves the last state alone");
+
+# --- lifetime counters -------------------------------------------------------
+# Verbatim GetWarranty output of the D6. The values are hex: the validation
+# code beside them could not be anything else, and 05c2 is not a decimal number.
+NeatoLocal_ParseWarranty($h, { cmd => "GetWarranty" },
+    "Item,Value\r\nCumulativeCleaningTimeInSecs,00192364\r\n"
+  . "CumulativeBatteryCycles,05c2\r\nValidationCode,c2cc3e78\r\n");
+is(ReadingsVal("nt", "batteryCycles", ""), 1474, "battery cycles decoded from hex");
+is(ReadingsVal("nt", "cleaningHours", ""), "457.6", "cleaning time converted to hours");
+
+NeatoLocal_ParseWarranty($h, { cmd => "GetWarranty" }, "Item,Value\r\n");
+is(ReadingsVal("nt", "batteryCycles", ""), 1474, "an empty answer keeps the counters");
 
 # --- the version has to survive a reload -------------------------------------
 # Define runs once, so an existing device would otherwise keep reporting the

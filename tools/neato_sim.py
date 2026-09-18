@@ -451,6 +451,14 @@ def handle_command(robot, line):
             robot.settings[match[0]] = value
         return ""
 
+    if low == "getwarranty":
+        return "\n".join([
+            "Item,Value",
+            "CumulativeCleaningTimeInSecs,00192364",
+            "CumulativeBatteryCycles,05c2",
+            "ValidationCode,c2cc3e78",
+        ])
+
     if low == "getusage":
         return "\n".join([
             "Item,Value",

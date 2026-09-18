@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.5.1";
+my $NeatoLocal_VERSION = "0.6.0";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -71,6 +71,7 @@ my %NeatoLocal_gets = (
     "sensors"   => "noArg",
     "state"     => "noArg",
     "usage"     => "noArg",
+    "warranty"  => "noArg",
     "settings"  => "noArg",
     "wifiStatus"=> "noArg",
 );
@@ -293,6 +294,7 @@ sub NeatoLocal_Init($) {
 
     NeatoLocal_Enqueue($hash, "GetVersion", \&NeatoLocal_ParseVersion);
     NeatoLocal_Enqueue($hash, "GetUserSettings", \&NeatoLocal_ParseUserSettings);
+    NeatoLocal_Enqueue($hash, "GetWarranty", \&NeatoLocal_ParseWarranty);
     NeatoLocal_StatusRequest($hash);
     NeatoLocal_RestartTimer($hash);
 
@@ -877,6 +879,36 @@ sub NeatoLocal_StateIsIdle($) {
     return ($ui eq "UIMGR_STATE_IDLE" || $ui eq "UIMGR_STATE_STANDBY") ? 1 : 0;
 }
 
+# GetWarranty carries the two counters that say how hard the robot has been
+# used. The values are hex, which the validation code next to them makes plain:
+#
+#   Item,Value
+#   CumulativeCleaningTimeInSecs,00192364
+#   CumulativeBatteryCycles,05c2
+#   ValidationCode,c2cc3e78
+sub NeatoLocal_ParseWarranty($$$) {
+    my ($hash, $entry, $body) = @_;
+    my $v = NeatoLocal_ParseCsv($body);
+
+    readingsBeginUpdate($hash);
+
+    if (defined($v->{"CumulativeBatteryCycles"})
+        && $v->{"CumulativeBatteryCycles"} =~ m/^[0-9a-f]+$/i) {
+        readingsBulkUpdateIfChanged($hash, "batteryCycles",
+            hex($v->{"CumulativeBatteryCycles"}));
+    }
+
+    if (defined($v->{"CumulativeCleaningTimeInSecs"})
+        && $v->{"CumulativeCleaningTimeInSecs"} =~ m/^[0-9a-f]+$/i) {
+        readingsBulkUpdateIfChanged($hash, "cleaningHours",
+            sprintf("%.1f", hex($v->{"CumulativeCleaningTimeInSecs"}) / 3600));
+    }
+
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
 sub NeatoLocal_ParseUserSettings($$$) {
     my ($hash, $entry, $body) = @_;
 
@@ -1239,6 +1271,7 @@ sub NeatoLocal_Get($@) {
         "sensors"    => [ "GetAnalogSensors", undef                     ],
         "state"      => [ "GetState",         \&NeatoLocal_ParseState   ],
         "usage"      => [ "GetUsage",         undef                     ],
+        "warranty"   => [ "GetWarranty",      \&NeatoLocal_ParseWarranty ],
         "settings"   => [ "GetUserSettings",  \&NeatoLocal_ParseUserSettings ],
         "wifiStatus" => [ "GetWifiStatus",    undef                     ],
     );
@@ -1400,6 +1433,8 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>filterChangeTime</b>, <b>brushChangeTime</b>, <b>dirtBinInterval</b>,
         <b>scheduleEnabled</b>, <b>scheduledCleanings</b> - from
         GetUserSettings, fetched on connect and after every change</li>
+    <li><b>batteryCycles</b>, <b>cleaningHours</b> - lifetime counters from
+        GetWarranty. Useful for judging a tired battery.</li>
     <li><b>uiState</b>, <b>robotState</b> - what the robot reports about
         itself, e.g. UIMGR_STATE_STANDBY and ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent or legacy, depending on whether the event
@@ -1549,6 +1584,8 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>filterChangeTime</b>, <b>brushChangeTime</b>, <b>dirtBinInterval</b>,
         <b>scheduleEnabled</b>, <b>scheduledCleanings</b> - aus
         GetUserSettings, beim Verbinden und nach jeder Aenderung geholt</li>
+    <li><b>batteryCycles</b>, <b>cleaningHours</b> - Lebensdauerzaehler aus
+        GetWarranty. Brauchbar, um einen muede gewordenen Akku einzuschaetzen.</li>
     <li><b>uiState</b>, <b>robotState</b> - was der Roboter ueber sich selbst
         meldet, z. B. UIMGR_STATE_STANDBY und ST_C_Standby</li>
     <li><b>commandApi</b> - setEvent oder legacy, je nachdem ob sich die
