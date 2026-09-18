@@ -93,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.8.0";
+static const char *VERSION = "0.9.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -127,6 +127,14 @@ static bool debugUsable = true;
 static String wifiSsid;
 static String wifiPsk;
 static bool apMode = false;     // no credentials: running as an access point
+
+// Why the station side last dropped or refused to associate. This is the one
+// number that separates "wrong password" from "network not found" -- from the
+// outside both look like a board that simply does not turn up.
+static volatile int lastDisconnectReason = 0;
+#if defined(ARDUINO_ARCH_ESP8266)
+static WiFiEventHandler disconnectHandler;
+#endif
 
 #if HAVE_CONFIG_STORE
 static Preferences prefs;
@@ -254,6 +262,50 @@ static void handOverSerial() {
 #endif
 }
 
+// The codes both SDKs agree on. Anything unlisted is printed as a bare number
+// rather than guessed at.
+static const __FlashStringHelper *disconnectReasonText(int reason) {
+  switch (reason) {
+    case 2:   return F("authentication expired");
+    case 4:   return F("association expired");
+    case 15:  return F("password refused (4-way handshake timed out)");
+    case 200: return F("beacon lost");
+    case 201: return F("network not found");
+    case 202: return F("authentication refused");
+    case 203: return F("association refused");
+    case 204: return F("handshake timed out");
+    case 205: return F("connection failed");
+    default:  return NULL;    // printed as a bare number rather than guessed at
+  }
+}
+
+static void printDisconnectReason() {
+  Serial.print(F("reason "));
+  Serial.print(lastDisconnectReason);
+  // No peeking inside the string: on the ESP8266 it lives in PROGMEM and
+  // cannot be read byte by byte like this.
+  const __FlashStringHelper *text = disconnectReasonText(lastDisconnectReason);
+  if (text != NULL) {
+    Serial.print(' ');
+    Serial.print(text);
+  }
+  Serial.println();
+}
+
+// Registered once, before the first connect attempt, so nothing is missed.
+static void watchDisconnects() {
+#if defined(ARDUINO_ARCH_ESP8266)
+  disconnectHandler = WiFi.onStationModeDisconnected(
+      [](const WiFiEventStationModeDisconnected &event) {
+        lastDisconnectReason = (int)event.reason;
+      });
+#else
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    lastDisconnectReason = (int)info.wifi_sta_disconnected.reason;
+  }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+#endif
+}
+
 // Must be applied after the radio is up, i.e. after WiFi.mode(), and again
 // whenever the mode changes.
 static void applyRegulatoryDomain() {
@@ -274,16 +326,29 @@ static void applyRegulatoryDomain() {
 // board whose antenna barely reaches the router, both look exactly like a
 // wrong password from the outside -- the scan tells them apart.
 //
-// The station side has to be stopped first. While it works through a connect
-// attempt the radio sits on the target channel, and a scan started underneath
-// it comes back empty -- which reads like an empty room instead of a locked
-// door. The attempt is picked up again at the end.
+static void startAccessPoint(bool keepTrying, bool announce = true);
+
+// Both radio users have to get out of the way first, or the result is a list
+// that looks complete and is not:
+//
+//   - A connect attempt parks the radio on the target channel, and a scan
+//     started underneath it comes back empty.
+//   - The setup access point holds the radio on its own channel and only lets
+//     the scan hop away briefly. Networks on other channels then miss their
+//     beacon and drop out of the list -- which is how a network that is plainly
+//     there, and that other boards are connected to, can fail to show up.
+//
+// So the access point is taken down for the duration and put back afterwards.
 static void scanNetworks() {
   if (!debugUsable) {
     return;
   }
 
   bool resume = wifiSsid.length() > 0;
+  bool hadAccessPoint = apMode;
+
+  WiFi.mode(WIFI_STA);          // drops the soft AP if one was running
+  applyRegulatoryDomain();
 #if defined(ARDUINO_ARCH_ESP8266)
   WiFi.disconnect(false);
 #else
@@ -353,7 +418,10 @@ static void scanNetworks() {
   }
   WiFi.scanDelete();
 
-  if (resume) {
+  if (hadAccessPoint) {
+    startAccessPoint(true, false);   // back the way it was, without the banner
+  }
+  else if (resume) {
     WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
   }
 }
@@ -363,7 +431,7 @@ static void scanNetworks() {
 // different channel, must not strand the board in access point mode until
 // somebody walks over and power-cycles it. With AP_STA the SDK keeps retrying
 // the network in the background and the access point is only a way back in.
-static void startAccessPoint(bool keepTrying) {
+static void startAccessPoint(bool keepTrying, bool announce) {
   apMode = true;
   WiFi.mode(keepTrying ? WIFI_AP_STA : WIFI_AP);
   applyRegulatoryDomain();
@@ -374,7 +442,7 @@ static void startAccessPoint(bool keepTrying) {
     WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
   }
 
-  if (debugUsable) {
+  if (debugUsable && announce) {
     Serial.print(F("access point 'neato-setup' at "));
     Serial.print(WiFi.softAPIP());
     Serial.println(keepTrying ? F(" -- still trying the configured network")
@@ -400,6 +468,7 @@ static void setupWifi() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   applyRegulatoryDomain();
+  watchDisconnects();
 #if defined(ARDUINO_ARCH_ESP8266)
   WiFi.hostname(HOSTNAME);
 #else
@@ -427,6 +496,9 @@ static void setupWifi() {
   if (WiFi.status() != WL_CONNECTED) {
     // 1 = name not found, 4 = rejected (usually the password), 6 = given up.
     dbg(String(F("no connection, WiFi.status() = ")) + (int)WiFi.status());
+    if (debugUsable) {
+      printDisconnectReason();
+    }
     scanNetworks();
     startAccessPoint(true);
   }
@@ -523,6 +595,7 @@ static void consoleHandle(const String &line) {
       Serial.print(F("stored ")); Serial.println(configVerify(wifiSsid, wifiPsk) ? 1 : 0);
       Serial.print(F("connected ")); Serial.println(WiFi.status() == WL_CONNECTED ? 1 : 0);
       Serial.print(F("rssi ")); Serial.println(WiFi.RSSI());
+      printDisconnectReason();
       return;
     }
     if (rest.equalsIgnoreCase("scan")) {

@@ -248,10 +248,13 @@ ist der verlässlichere Weg – Webserver, mDNS und OTA werden sauber neu
 aufgesetzt – und beweist nebenbei, dass die Zugangsdaten den Neustart
 überstanden haben. `wifiESP` wartet den Neustart ab und fragt danach die
 Adresse ab; meldet das Board dann den Access Point statt einer Adresse im
-Heimnetz, fragt es zusätzlich `wifi scan` ab und hängt die Netze, die das Board
-von seinem Platz aus sieht, an die Meldung in `lastFlash` an. Fehlt das eigene
-Netz in dieser Liste, liegt es nicht am Passwort: dann ist es entweder zu weit
-weg oder ein 5-GHz-Netz, das der C3 nicht kann.
+Heimnetz, fragt es `wifi status` und `wifi scan` ab und stellt die Ursache in
+`lastFlash` fest.
+
+Maßgeblich ist dabei der Trennungsgrund, den das Board vom Verbindungsversuch
+selbst mitbringt: 15 oder 204 heißt Passwort abgelehnt, 201 heißt Netz nicht
+gefunden. Die Scan-Liste steht nur daneben, mit Pegel und Kanal zu jedem Netz –
+sie ist ein Indiz, kein Beweis, denn ein Scan kann unvollständig sein.
 
 Die Firmware stellt die Funk-Länderkennung dabei auf `DE` (Kanäle 1–13). Ohne
 das bleibt ein Board bei der Werkseinstellung „world safe" stehen und lässt die

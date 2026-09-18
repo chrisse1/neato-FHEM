@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.3";
+my $NeatoLocal_VERSION = "0.11.4";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1593,20 +1593,57 @@ sub NeatoLocal_FlashAborted($) {
 # Sends the credentials to the freshly flashed board over its USB port, using
 # the little configuration console the firmware provides. One line per value so
 # both may contain spaces.
+# The disconnect codes both SDKs agree on. Unknown codes keep their number
+# rather than being dressed up as an explanation.
+my %NeatoLocal_reasons = (
+    2   => "authentication expired",
+    4   => "association expired",
+    15  => "password refused",
+    200 => "beacon lost",
+    201 => "network not found",
+    202 => "authentication refused",
+    203 => "association refused",
+    204 => "handshake timed out",
+    205 => "connection failed",
+);
+
+sub NeatoLocal_ReasonText($) {
+    my ($reason) = @_;
+    return $NeatoLocal_reasons{$reason} if (defined($NeatoLocal_reasons{$reason}));
+    return "unknown";
+}
+
 # Turn the board's scan into the one sentence that moves the search forward.
 # A name that is not on the air cannot be reached with any password, and a name
 # that is on the air rules the name out -- naming which of the two it is beats
 # handing back both possibilities every time.
-sub NeatoLocal_ScanVerdict($$) {
-    my ($ssid, $scan) = @_;
+sub NeatoLocal_ScanVerdict($$;$) {
+    my ($ssid, $scan, $status) = @_;
 
     $scan = "" if (!defined($scan));
+    $status = "" if (!defined($status));
 
     my @seen;
     while ($scan =~ m/^scan:\s+(.*?)\s\s+(-?\d+) dBm\s+ch (\d+)/mg) {
         push @seen, "$1 ($2 dBm, ch $3)";
     }
     my $list = @seen ? " In range: " . join(", ", @seen) . "." : "";
+
+    # The board's own reason code beats every inference drawn from the scan:
+    # it comes from the association attempt itself.
+    my ($reason) = ($status =~ m/^reason\s+(\d+)/m);
+    if (defined($reason) && $reason > 0) {
+        return "the network refused the password ('$ssid' answered, reason "
+             . "$reason).$list"
+            if ($reason == 15 || $reason == 204 || $reason == 202 || $reason == 2);
+
+        return "the board did not find '$ssid' on the air (reason $reason). "
+             . "Check the name, and that the 2.4 GHz band carries it.$list"
+            if ($reason == 201);
+
+        return "the board could not join '$ssid' (reason $reason: "
+             . NeatoLocal_ReasonText($reason) . ").$list";
+    }
 
     return "the name '$ssid' is not on the air on 2.4 GHz where the board is, "
          . "so no password gets it onto the network. Check whether that name "
@@ -1752,9 +1789,12 @@ sub NeatoLocal_ProvisionBlocking($) {
         # Ask the board what it can see. A network missing from that list is
         # either out of reach or 5 GHz only, and neither is a typo in the
         # password -- which is what everybody checks first.
-        my $scan = NeatoLocal_ConsoleAsk($port, "wifi scan",
-                                         qr/OK scan done/, 30);
-        return "$name|" . NeatoLocal_ScanVerdict($ssid, $scan);
+        # The reason code first: it comes straight from the association
+        # attempt, while the scan is only circumstantial evidence.
+        my $status = NeatoLocal_ConsoleAsk($port, "wifi status", qr/^reason\s/m, 10);
+        my $scan   = NeatoLocal_ConsoleAsk($port, "wifi scan",
+                                           qr/OK scan done/, 30);
+        return "$name|" . NeatoLocal_ScanVerdict($ssid, $scan, $status);
     }
 
     return "$name|OK|$ip";
