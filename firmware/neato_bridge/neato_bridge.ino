@@ -93,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.10.0";
+static const char *VERSION = "0.11.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -360,6 +360,42 @@ static const __FlashStringHelper *encryptionName(int index) {
 #endif
 }
 
+// The disconnect call is spelled differently per core.
+static void stopStation(bool radioOff) {
+#if defined(ARDUINO_ARCH_ESP8266)
+  WiFi.disconnect(radioOff);
+#else
+  WiFi.disconnect(radioOff, false);
+#endif
+}
+
+// Bring the radio down and up again. A software reset leaves the WiFi hardware
+// in whatever state it was in; only a power cycle clears it completely. An
+// association that succeeds after pulling the plug and fails after ESP.restart()
+// is what that difference looks like from the outside, so the reset is done
+// here explicitly instead of being left to the next person with a USB cable.
+static void restartRadio() {
+  ignoreDisconnects = true;
+  stopStation(true);
+  WiFi.mode(WIFI_OFF);
+  delay(500);
+  WiFi.mode(WIFI_STA);
+  applyRegulatoryDomain();
+  delay(100);
+  ignoreDisconnects = false;
+}
+
+// Leave the radio in a defined state before a software reset, for the same
+// reason.
+static void restartBoard() {
+  Serial.flush();
+  ignoreDisconnects = true;
+  stopStation(true);
+  WiFi.mode(WIFI_OFF);
+  delay(200);
+  ESP.restart();
+}
+
 static void startAccessPoint(bool keepTrying, bool announce = true);
 
 // Both radio users have to get out of the way first, or the result is a list
@@ -486,6 +522,23 @@ static void startAccessPoint(bool keepTrying, bool announce) {
   }
 }
 
+static bool connectAttempt(uint32_t timeoutMs) {
+  WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
+
+  uint32_t deadline = millis() + timeoutMs;
+  while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - deadline) < 0) {
+    if (debugUsable) {
+      Serial.print('.');
+    }
+    delay(200);
+    yield();
+  }
+  if (debugUsable) {
+    Serial.println();
+  }
+  return WiFi.status() == WL_CONNECTED;
+}
+
 static void setupWifi() {
   configLoad();
 
@@ -511,33 +564,37 @@ static void setupWifi() {
   WiFi.setHostname(HOSTNAME);
 #endif
   WiFi.setAutoReconnect(true);
-  WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
 
   // Do not block forever -- the robot has to stay reachable over serial even
   // if the access point is down, and the SDK reconnects on its own.
-  uint32_t deadline = millis() + 20000;
-  while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - deadline) < 0) {
-    if (debugUsable) {
-      Serial.print('.');
-    }
-    delay(200);
-    yield();
+  if (connectAttempt(20000)) {
+    return;
   }
+
+  // 1 = name not found, 4 = rejected (usually the password), 6 = given up.
+  dbg(String(F("no connection, WiFi.status() = ")) + (int)WiFi.status());
   if (debugUsable) {
-    Serial.println();
+    printDisconnectReason();
+  }
+
+  // Second attempt on a radio that has really been off. After a software reset
+  // the first one can fail on hardware state alone, and then everything after
+  // it -- the reason code, the scan -- describes a fault that is not there.
+  dbg(F("restarting the radio and trying once more"));
+  restartRadio();
+  if (connectAttempt(15000)) {
+    dbg(F("connected on the second attempt -- the first failed on radio state"));
+    return;
   }
 
   // A wrong password should not leave the board unreachable for good -- but
   // neither should a router that simply took its time.
-  if (WiFi.status() != WL_CONNECTED) {
-    // 1 = name not found, 4 = rejected (usually the password), 6 = given up.
-    dbg(String(F("no connection, WiFi.status() = ")) + (int)WiFi.status());
-    if (debugUsable) {
-      printDisconnectReason();
-    }
-    scanNetworks();
-    startAccessPoint(true);
+  dbg(String(F("still no connection, WiFi.status() = ")) + (int)WiFi.status());
+  if (debugUsable) {
+    printDisconnectReason();
   }
+  scanNetworks();
+  startAccessPoint(true);
 }
 
 // ------------------------------------------------------- config console ----
@@ -581,9 +638,7 @@ static void consoleHandle(const String &line) {
 
   if (cmd.equalsIgnoreCase("restart")) {
     Serial.println(F("OK restarting"));
-    Serial.flush();
-    delay(100);
-    ESP.restart();
+    restartBoard();
     return;
   }
 
@@ -620,9 +675,7 @@ static void consoleHandle(const String &line) {
       // than re-initialising each of them by hand, a restart does it properly
       // -- and proves in passing that the credentials really survived.
       Serial.println(F("OK saved, restarting"));
-      Serial.flush();
-      delay(200);
-      ESP.restart();
+      restartBoard();
       return;
     }
     if (rest.equalsIgnoreCase("status")) {
@@ -889,7 +942,7 @@ static void handleHttp() {
       http.flush();
       http.stop();
       delay(300);
-      ESP.restart();
+      restartBoard();
       return;
     }
     handled = true;

@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.6";
+my $NeatoLocal_VERSION = "0.11.7";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1272,7 +1272,7 @@ sub NeatoLocal_Set($@) {
         Log3 $name, 3, "NeatoLocal ($name) - sending credentials to $port";
 
         BlockingCall("NeatoLocal_ProvisionBlocking", "$name|$port|$ssid|$psk",
-                     "NeatoLocal_ProvisionDone", 60,
+                     "NeatoLocal_ProvisionDone", 150,
                      "NeatoLocal_FlashAborted", $hash);
         return undef;
     }
@@ -1784,8 +1784,12 @@ sub NeatoLocal_ProvisionBlocking($) {
 
     # Wait out the restart, then ask where it ended up. The USB port goes away
     # and comes back with it, so the port is reopened rather than kept.
+    # The board may need two attempts now: one on the radio as the reset left
+    # it, and one after bringing it down properly. Together with the fallback
+    # that is well over half a minute, so the window has to be wide enough not
+    # to give up while the board is still working on it.
     my $reply = "";
-    foreach my $attempt (1 .. 6) {
+    foreach my $attempt (1 .. 18) {
         sleep(3);
         next if (!-e $port);
 
@@ -1808,7 +1812,10 @@ sub NeatoLocal_ProvisionBlocking($) {
         alarm(0);
         close($fh);
 
-        last if ($reply =~ m/\bip\s+\d+\.\d+\.\d+\.\d+/);
+        # 0.0.0.0 is what the board reports while it is still trying. Taking
+        # it for an address ends the wait at the very moment there is nothing
+        # to report yet.
+        last if ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/ && $1 ne "0.0.0.0");
         $reply = "";
     }
 
@@ -1820,6 +1827,10 @@ sub NeatoLocal_ProvisionBlocking($) {
 
     my ($ip) = ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/);
     my ($mode) = ($reply =~ m/\bmode\s+(\w+)/);
+
+    # Still trying, not an address -- and an address is what the caller would
+    # otherwise be handed to point the device at.
+    $ip = undef if (defined($ip) && $ip eq "0.0.0.0");
 
     # 192.168.4.1 is the setup access point: saved, but not on the network.
     if (!defined($ip) || (defined($mode) && lc($mode) eq "ap")) {

@@ -245,6 +245,13 @@ Wer nicht vom FHEM-Rechner aus flasht: ein Board ohne gespeicherte Zugangsdaten
 Kommandos nimmt die Firmware auch über ein Terminal am USB-Port entgegen
 (`help` listet sie).
 
+Vor jedem Software-Neustart wird das Funkmodul abgeschaltet, und scheitert der
+erste Verbindungsversuch, wiederholt das Board ihn auf einem wirklich neu
+gestarteten Funkmodul. Ein Software-Reset lässt die WLAN-Hardware sonst im
+vorherigen Zustand stehen; eine Verbindung, die erst nach dem Ziehen des
+Steckers klappt, ist genau dieses Bild – und alles, was danach gemeldet wird
+(Trennungsgrund, Scan), beschreibt dann einen Fehler, den es nicht gibt.
+
 Nach `wifi save` **startet das Board neu**, statt im Betrieb umzuschalten. Das
 ist der verlässlichere Weg – Webserver, mDNS und OTA werden sauber neu
 aufgesetzt – und beweist nebenbei, dass die Zugangsdaten den Neustart
