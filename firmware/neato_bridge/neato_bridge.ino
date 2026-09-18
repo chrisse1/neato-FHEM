@@ -50,12 +50,16 @@
   #include <ESP8266WiFi.h>
   #include <ESP8266mDNS.h>
   #include <ArduinoOTA.h>
+  extern "C" {
+    #include <user_interface.h>   // wifi_set_country()
+  }
   #define ROBOT Serial          // UART0, moved to GPIO13/GPIO15 in setup()
 #elif defined(ARDUINO_ARCH_ESP32)
   #include <WiFi.h>
   #include <ESPmDNS.h>
   #include <ArduinoOTA.h>
   #include <Preferences.h>
+  #include <esp_wifi.h>         // esp_wifi_set_country_code()
   #define ROBOT Serial1         // dedicated UART, USB CDC stays free
   #define HAVE_CONFIG_STORE 1   // credentials live in NVS, not in this file
 #else
@@ -71,6 +75,14 @@
 #define WIFI_PSK "your-password"
 #endif
 
+// Channels 12 and 13 are allowed in Europe and routers do pick them, but a
+// board still carrying the factory "world safe" setting leaves them out of
+// every scan -- a network up there is then simply not there as far as the
+// board is concerned. Override for another region at compile time.
+#ifndef WIFI_COUNTRY
+#define WIFI_COUNTRY "DE"
+#endif
+
 // ESP32 only: the pins the robot's debug header is wired to. GPIO4/GPIO5 are
 // free on the C3 Super Mini and, unlike GPIO20/GPIO21, never collide with the
 // board's own console.
@@ -81,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.6.0";
+static const char *VERSION = "0.7.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -242,26 +254,82 @@ static void handOverSerial() {
 #endif
 }
 
+// Must be applied after the radio is up, i.e. after WiFi.mode(), and again
+// whenever the mode changes.
+static void applyRegulatoryDomain() {
+#if defined(ARDUINO_ARCH_ESP8266)
+  wifi_country_t country;
+  memcpy(country.cc, WIFI_COUNTRY, 3);
+  country.schan = 1;
+  country.nchan = 13;
+  country.policy = WIFI_COUNTRY_POLICY_MANUAL;
+  wifi_set_country(&country);
+#else
+  // true: follow the access point's own country information once associated.
+  esp_wifi_set_country_code(WIFI_COUNTRY, true);
+#endif
+}
+
 // What the board can actually see. A network that only exists on 5 GHz, and a
 // board whose antenna barely reaches the router, both look exactly like a
 // wrong password from the outside -- the scan tells them apart.
+//
+// The station side has to be stopped first. While it works through a connect
+// attempt the radio sits on the target channel, and a scan started underneath
+// it comes back empty -- which reads like an empty room instead of a locked
+// door. The attempt is picked up again at the end.
 static void scanNetworks() {
   if (!debugUsable) {
     return;
   }
-  int found = WiFi.scanNetworks();
-  if (found <= 0) {
-    Serial.println(F("scan: nothing in range (2.4 GHz only -- a 5 GHz network stays invisible)"));
-    return;
+
+  bool resume = wifiSsid.length() > 0;
+#if defined(ARDUINO_ARCH_ESP8266)
+  WiFi.disconnect(false);
+#else
+  WiFi.disconnect(false, false);
+#endif
+  delay(200);
+
+  // A scan that collides with something else on the radio returns at once and
+  // empty-handed, so an empty first result is worth a second look.
+  int found = 0;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    found = WiFi.scanNetworks(false, true);   // blocking, hidden ones included
+    if (found > 0) {
+      break;
+    }
+    WiFi.scanDelete();
+    delay(500);
   }
-  for (int i = 0; i < found; i++) {
-    Serial.print(F("scan: "));
-    Serial.print(WiFi.SSID(i));
-    Serial.print(F("  "));
-    Serial.print(WiFi.RSSI(i));
-    Serial.println(F(" dBm"));
+
+  if (found < 0) {
+    // -1 still running, -2 refused. Not a statement about the room.
+    Serial.print(F("scan: failed ("));
+    Serial.print(found);
+    Serial.println(F("), the radio would not scan -- this says nothing about what is in range"));
+  }
+  else if (found == 0) {
+    Serial.println(F("scan: nothing in range (2.4 GHz only -- a 5 GHz network stays invisible)"));
+  }
+  else {
+    for (int i = 0; i < found; i++) {
+      String ssid = WiFi.SSID(i);
+      Serial.print(F("scan: "));
+      Serial.print(ssid.length() ? ssid : String(F("<hidden>")));
+      Serial.print(F("  "));
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(F(" dBm  ch "));
+      Serial.print(WiFi.channel(i));
+      Serial.print(F("  enc "));
+      Serial.println((int)WiFi.encryptionType(i));
+    }
   }
   WiFi.scanDelete();
+
+  if (resume) {
+    WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
+  }
 }
 
 // Opens the setup access point. When credentials exist the station side is
@@ -272,6 +340,7 @@ static void scanNetworks() {
 static void startAccessPoint(bool keepTrying) {
   apMode = true;
   WiFi.mode(keepTrying ? WIFI_AP_STA : WIFI_AP);
+  applyRegulatoryDomain();
   WiFi.softAP("neato-setup");
 
   if (keepTrying) {
@@ -304,6 +373,7 @@ static void setupWifi() {
   apMode = false;
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  applyRegulatoryDomain();
 #if defined(ARDUINO_ARCH_ESP8266)
   WiFi.hostname(HOSTNAME);
 #else

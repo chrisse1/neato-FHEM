@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.1";
+my $NeatoLocal_VERSION = "0.11.2";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1713,11 +1713,18 @@ sub NeatoLocal_ProvisionBlocking($) {
         # either out of reach or 5 GHz only, and neither is a typo in the
         # password -- which is what everybody checks first.
         my $scan = NeatoLocal_ConsoleAsk($port, "wifi scan",
-                                         qr/OK scan done|nothing in range/, 15);
-        my @seen = ($scan =~ m/^scan:\s+(.*?)\s+-?\d+ dBm\s*$/mg);
+                                         qr/OK scan done/, 30);
+        my @seen = ($scan =~ m/^scan:\s+(.*?)\s+-?\d+ dBm/mg);
 
-        my $hint = @seen ? " In range: " . join(", ", @seen) . "."
-                 : " The board sees no 2.4 GHz network at all from where it is.";
+        # "The scan found nothing" and "the scan did not run" look the same in
+        # the result and mean opposite things, so they are not merged here.
+        my $hint = @seen                     ? " In range: " . join(", ", @seen) . "."
+                 : $scan =~ m/scan: failed/  ? " The scan itself did not run, so "
+                                             . "nothing follows about the reception."
+                 : $scan =~ m/nothing in range/
+                                             ? " The board sees no 2.4 GHz network "
+                                             . "at all from where it is."
+                 :                             " The board did not answer the scan.";
 
         return "$name|credentials stored, but the board could not join the "
              . "network -- it opened the setup access point instead. Check "

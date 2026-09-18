@@ -253,6 +253,12 @@ von seinem Platz aus sieht, an die Meldung in `lastFlash` an. Fehlt das eigene
 Netz in dieser Liste, liegt es nicht am Passwort: dann ist es entweder zu weit
 weg oder ein 5-GHz-Netz, das der C3 nicht kann.
 
+Die Firmware stellt die Funk-Länderkennung dabei auf `DE` (Kanäle 1–13). Ohne
+das bleibt ein Board bei der Werkseinstellung „world safe" stehen und lässt die
+Kanäle 12 und 13 aus jedem Scan heraus – ein Router, der dort funkt, existiert
+für das Board dann schlicht nicht. Andere Region: `-DWIFI_COUNTRY=\"…\"` beim
+Übersetzen.
+
 `wifi save` liest die Zugangsdaten vor dem Neustart wieder aus dem Flash zurück
 und meldet `ERR storage did not keep the credentials`, wenn dort nichts
 angekommen ist. Sonst sähe ein leerer Speicher nach dem Neustart genauso aus
