@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.2";
+my $NeatoLocal_VERSION = "0.11.3";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1593,6 +1593,46 @@ sub NeatoLocal_FlashAborted($) {
 # Sends the credentials to the freshly flashed board over its USB port, using
 # the little configuration console the firmware provides. One line per value so
 # both may contain spaces.
+# Turn the board's scan into the one sentence that moves the search forward.
+# A name that is not on the air cannot be reached with any password, and a name
+# that is on the air rules the name out -- naming which of the two it is beats
+# handing back both possibilities every time.
+sub NeatoLocal_ScanVerdict($$) {
+    my ($ssid, $scan) = @_;
+
+    $scan = "" if (!defined($scan));
+
+    my @seen;
+    while ($scan =~ m/^scan:\s+(.*?)\s\s+(-?\d+) dBm\s+ch (\d+)/mg) {
+        push @seen, "$1 ($2 dBm, ch $3)";
+    }
+    my $list = @seen ? " In range: " . join(", ", @seen) . "." : "";
+
+    return "the name '$ssid' is not on the air on 2.4 GHz where the board is, "
+         . "so no password gets it onto the network. Check whether that name "
+         . "belongs to the 5 GHz band only, or is hidden.$list"
+        if ($scan =~ m/is NOT among them/);
+
+    return "credentials stored, but the board could not join '$ssid' although "
+         . "it is on the air -- so it is the password or the encryption, not "
+         . "the name.$list"
+        if ($scan =~ m/configured network '.*' is there/);
+
+    # "The scan found nothing" and "the scan did not run" look the same in the
+    # result and mean opposite things, so they are not merged here.
+    my $hint = $list                    ? $list
+             : $scan =~ m/scan: failed/ ? " The scan itself did not run, so "
+                                        . "nothing follows about the reception."
+             : $scan =~ m/nothing in range/
+                                        ? " The board sees no 2.4 GHz network at "
+                                        . "all from where it is."
+             :                            " The board did not answer the scan.";
+
+    return "credentials stored, but the board could not join the network -- it "
+         . "opened the setup access point instead. Check name and password, and "
+         . "remember it is 2.4 GHz only.$hint";
+}
+
 # Send one line to the bridge console and collect what comes back, up to the
 # line that ends the answer or the timeout. Runs inside BlockingCall only --
 # it blocks on the serial port.
@@ -1714,21 +1754,7 @@ sub NeatoLocal_ProvisionBlocking($) {
         # password -- which is what everybody checks first.
         my $scan = NeatoLocal_ConsoleAsk($port, "wifi scan",
                                          qr/OK scan done/, 30);
-        my @seen = ($scan =~ m/^scan:\s+(.*?)\s+-?\d+ dBm/mg);
-
-        # "The scan found nothing" and "the scan did not run" look the same in
-        # the result and mean opposite things, so they are not merged here.
-        my $hint = @seen                     ? " In range: " . join(", ", @seen) . "."
-                 : $scan =~ m/scan: failed/  ? " The scan itself did not run, so "
-                                             . "nothing follows about the reception."
-                 : $scan =~ m/nothing in range/
-                                             ? " The board sees no 2.4 GHz network "
-                                             . "at all from where it is."
-                 :                             " The board did not answer the scan.";
-
-        return "$name|credentials stored, but the board could not join the "
-             . "network -- it opened the setup access point instead. Check "
-             . "name and password, and remember it is 2.4 GHz only.$hint";
+        return "$name|" . NeatoLocal_ScanVerdict($ssid, $scan);
     }
 
     return "$name|OK|$ip";

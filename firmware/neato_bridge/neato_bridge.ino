@@ -93,7 +93,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.7.0";
+static const char *VERSION = "0.8.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -313,8 +313,12 @@ static void scanNetworks() {
     Serial.println(F("scan: nothing in range (2.4 GHz only -- a 5 GHz network stays invisible)"));
   }
   else {
+    int configuredAt = -1;
     for (int i = 0; i < found; i++) {
       String ssid = WiFi.SSID(i);
+      if (ssid == wifiSsid) {
+        configuredAt = i;
+      }
       Serial.print(F("scan: "));
       Serial.print(ssid.length() ? ssid : String(F("<hidden>")));
       Serial.print(F("  "));
@@ -323,6 +327,28 @@ static void scanNetworks() {
       Serial.print(WiFi.channel(i));
       Serial.print(F("  enc "));
       Serial.println((int)WiFi.encryptionType(i));
+    }
+
+    // The one comparison worth spelling out. A name that is not on the air
+    // cannot be reached with any password, so saying so here stops the search
+    // before it goes down that road.
+    if (wifiSsid.length() > 0) {
+      if (configuredAt >= 0) {
+        Serial.print(F("scan: configured network '"));
+        Serial.print(wifiSsid);
+        Serial.print(F("' is there, channel "));
+        Serial.print(WiFi.channel(configuredAt));
+        Serial.print(F(", "));
+        Serial.print(WiFi.RSSI(configuredAt));
+        Serial.print(F(" dBm, enc "));
+        Serial.println((int)WiFi.encryptionType(configuredAt));
+      }
+      else {
+        Serial.print(F("scan: configured network '"));
+        Serial.print(wifiSsid);
+        Serial.println(F("' is NOT among them -- no password reaches a name that "
+                         "is not on the air on 2.4 GHz"));
+      }
     }
   }
   WiFi.scanDelete();

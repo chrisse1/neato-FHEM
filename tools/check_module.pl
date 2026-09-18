@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 180;
+use Test::More tests => 190;
 
 package main;
 
@@ -691,3 +691,41 @@ $h->{helper}{testMode} = 1;
 NeatoLocal_Shutdown($h);
 is(scalar(grep { /TestMode Off/i } @WRITTEN), 1, "shutdown leaves test mode");
 is($h->{helper}{testMode}, 0, "test mode flag cleared");
+
+# --- the scan verdict -------------------------------------------------------
+# Verbatim shape of what the bridge prints, so a change to the firmware's
+# wording shows up here rather than in a user's error message.
+my $scan_missing = <<'OUT';
+scan: Vodafone-F4D4  -72 dBm  ch 1  enc 3
+scan: Vodafone Hotspot  -74 dBm  ch 1  enc 0
+scan: Chefetage  -81 dBm  ch 11  enc 3
+scan: configured network 'WaxWeazle' is NOT among them -- no password reaches a name that is not on the air on 2.4 GHz
+OK scan done
+OUT
+
+my $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing);
+like($verdict, qr/not on the air/, "a missing name is named as the cause");
+unlike($verdict, qr/Check name and password/,
+       "and the password is not offered as a possibility any more");
+like($verdict, qr/Vodafone-F4D4 \(-72 dBm, ch 1\)/, "the scan list carries level and channel");
+like($verdict, qr/Vodafone Hotspot \(-74 dBm, ch 1\)/, "a name with a space survives the parse");
+
+my $scan_present = <<'OUT';
+scan: WaxWeazle  -58 dBm  ch 6  enc 3
+scan: configured network 'WaxWeazle' is there, channel 6, -58 dBm, enc 3
+OK scan done
+OUT
+
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_present);
+like($verdict, qr/password or the encryption/, "a name that is on the air points at the password");
+unlike($verdict, qr/not on the air/, "and not at the name");
+
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", "scan: failed (-2), the radio would not scan\nOK scan done\n");
+like($verdict, qr/scan itself did not run/, "a failed scan says nothing about the reception");
+unlike($verdict, qr/sees no 2\.4 GHz network/, "and is not reported as an empty room");
+
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", "scan: nothing in range (2.4 GHz only)\nOK scan done\n");
+like($verdict, qr/sees no 2\.4 GHz network/, "an empty room is reported as one");
+
+$verdict = NeatoLocal_ScanVerdict("WaxWeazle", "");
+like($verdict, qr/did not answer/, "no answer at all is its own case");
