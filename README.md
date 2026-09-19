@@ -548,4 +548,9 @@ und übersetzt zusätzlich die Brücken-Firmware für den ESP32-C3.
 
 ## Lizenz
 
-GPLv2, wie FHEM selbst.
+GPLv2, wie FHEM selbst – der vollständige Text liegt in [LICENSE](LICENSE).
+
+Die SKey-Berechnung für die `SetEvent`-Kommandos ist eine eigenständige
+Neuimplementierung dessen, was [OpenNeato](https://github.com/renjfk/OpenNeato)
+(MIT, © 2026 Soner Köksal) reverse engineered hat, gegen dessen C++-Original an
+bekannten Werten geprüft.

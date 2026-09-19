@@ -34,7 +34,9 @@
  * ESP8266, which has only one usable UART and loses its console to the robot.
  * Watch the monitor at 115200 baud.
  *
- * Part of https://github.com/chrisse1/neato-FHEM
+ * Part of https://github.com/chrisse1/neato-FHEM, released under the GNU
+ * General Public License version 2. The full text is in the LICENSE file at the
+ * repository root; there is no warranty, to the extent permitted by law.
  */
 
 #if !defined(ARDUINO_ARCH_ESP32)

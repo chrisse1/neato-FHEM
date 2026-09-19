@@ -22,7 +22,9 @@
 #     verified against OpenNeato's C++ original on known values.
 #
 #     This file is part of https://github.com/chrisse1/neato-FHEM
-#     Released under the same license as FHEM itself (GPLv2).
+#     Released under the GNU General Public License version 2, the same license
+#     as FHEM itself. The full text is in the LICENSE file at the repository
+#     root; there is no warranty, to the extent permitted by law.
 #
 ##############################################################################
 
