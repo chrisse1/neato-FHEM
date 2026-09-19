@@ -37,7 +37,7 @@ use IO::Socket::INET;
 use IO::Select;
 use Digest::MD5;
 
-my $NeatoLocal_VERSION = "0.14.2";
+my $NeatoLocal_VERSION = "0.14.3";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -1458,6 +1458,14 @@ sub NeatoLocal_Set($@) {
 
     if ($cmd eq "clearError") {
         NeatoLocal_Enqueue($hash, "GetErr Clear", \&NeatoLocal_ParseGeneric);
+
+        # "Clear - Dismiss the reported error" is what the robot's own help says,
+        # and it means it: an alert survives GetErr Clear and then sits there for
+        # good, which reads like a robot nobody can reset. SetUIError is
+        # undocumented -- it comes from OpenNeato's reverse engineering -- and
+        # dismisses both. A robot that does not know it answers with an error,
+        # which costs one line in lastResponse and nothing else.
+        NeatoLocal_Enqueue($hash, "SetUIError clearall", \&NeatoLocal_ParseGeneric);
         NeatoLocal_Enqueue($hash, "GetErr", \&NeatoLocal_ParseErr);
         return undef;
     }
@@ -2674,7 +2682,7 @@ sub NeatoLocal_LeaveTestMode($) {
         app used to drive through the cloud. The documented commands offer no
         way to do this at all.</li>
     <li><b>findMe</b> - plays the "Find me" sound on the robot</li>
-    <li><b>clearError</b> - dismisses the reported error (GetErr Clear)</li>
+    <li><b>clearError</b> - dismisses what the robot reports: GetErr Clear for errors, and SetUIError clearall for alerts, which GetErr Clear leaves standing. An alert the robot keeps raising -- because it is still waiting for something -- comes back regardless.</li>
     <li><b>ecoMode &lt;on|off&gt;</b>, <b>intenseClean &lt;on|off&gt;</b>,
         <b>binFullDetect &lt;on|off&gt;</b> - user settings on the robot. Unlike
         the navigation mode these are read back afterwards, so their readings
@@ -2871,7 +2879,7 @@ sub NeatoLocal_LeaveTestMode($) {
         Event-Schnittstelle, mit der die App das durch die Cloud getan hat. Mit
         den dokumentierten Kommandos ist das gar nicht moeglich.</li>
     <li><b>findMe</b> - spielt den Ton "Find me" ab</li>
-    <li><b>clearError</b> - quittiert den gemeldeten Fehler (GetErr Clear)</li>
+    <li><b>clearError</b> - quittiert, was der Roboter meldet: GetErr Clear fuer Fehler und SetUIError clearall fuer Alarme, die GetErr Clear stehen laesst. Ein Alarm, den der Roboter immer wieder setzt -- weil er weiter auf etwas wartet -- kommt trotzdem zurueck.</li>
     <li><b>ecoMode &lt;on|off&gt;</b>, <b>intenseClean &lt;on|off&gt;</b>,
         <b>binFullDetect &lt;on|off&gt;</b> - Einstellungen im Roboter. Anders
         als der Navigationsmodus werden sie danach zurueckgelesen, die Readings

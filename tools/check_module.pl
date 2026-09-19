@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 248;
+use Test::More tests => 252;
 
 package main;
 
@@ -940,3 +940,22 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "http" }), 1,
 is(NeatoLocal_LinkUp({ TRANSPORT => "tcp" }), 0, "no handle, no link");
 is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
    "a serial handle counts too");
+
+# --- clearing what the robot reports ---------------------------------------
+# GetErr Clear dismisses errors only; the robot's own help says exactly that.
+# An alert survives it, and an alert nobody can dismiss looks like a defect.
+{
+    my ($ch, $cr) = mkdev("clr NeatoLocal 192.168.1.42:23");
+    $ch->{helper}{queue} = [];
+    @WRITTEN = ();
+    NeatoLocal_Set($ch, "clr", "clearError");
+
+    # The first goes out at once, the rest wait in the queue for its answer.
+    my @queued = (@WRITTEN, map { $_->{cmd} } @{$ch->{helper}{queue}});
+    @queued = map { my $c = $_; $c =~ s/\s+$//; $c } @queued;
+
+    is(scalar(@queued), 3, "clearError sends three commands");
+    is($queued[0], "GetErr Clear", "first the documented one, for errors");
+    is($queued[1], "SetUIError clearall", "then the undocumented one, for alerts");
+    is($queued[2], "GetErr", "and reads back what is left");
+}
