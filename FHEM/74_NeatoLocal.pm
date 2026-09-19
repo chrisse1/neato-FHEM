@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.12.2";
+my $NeatoLocal_VERSION = "0.12.3";
 
 # Where flashESP gets the image when nothing else is configured. The project's
 # CI builds it on every firmware change, and the text file beside it carries the
@@ -1302,6 +1302,7 @@ sub NeatoLocal_Set($@) {
                        . (defined($ssid) ? "$ssid|$psk" : "|"),
                          "NeatoLocal_FlashDone", 420,
                          "NeatoLocal_FlashAborted", $hash);
+            InternalTimer(gettimeofday() + 450, "NeatoLocal_FlashWatch", $hash);
             return undef;
         }
 
@@ -1327,6 +1328,7 @@ sub NeatoLocal_Set($@) {
         BlockingCall("NeatoLocal_ProvisionBlocking", "$name|$port|$ssid|$psk",
                      "NeatoLocal_ProvisionDone", 300,
                      "NeatoLocal_FlashAborted", $hash);
+        InternalTimer(gettimeofday() + 330, "NeatoLocal_FlashWatch", $hash);
         return undef;
     }
 
@@ -1732,7 +1734,35 @@ sub NeatoLocal_SeedOffset($) {
     return $offset;
 }
 
+# Blocking.pm hands a worker's result back to FHEM as a single telnet line and
+# escapes only quotes and semicolons. A newline in the value therefore breaks
+# the command in half: the first part is incomplete Perl, every following line
+# becomes its own "Unknown command", and the callback never runs. Nothing shows
+# up in the log either, because those errors go back to the child process, which
+# is not reading them -- the run simply vanishes, and the device keeps saying
+# "running" for ever.
+#
+# So the flattening happens here, around the workers, rather than at each
+# return: esptool alone produces a dozen lines, and the next person to add a
+# return would have to know this.
+sub NeatoLocal_OneLine($) {
+    my ($text) = @_;
+
+    return "" if (!defined($text));
+    $text =~ s/\s+$//;
+    $text =~ s/[\r\n]+/ -- /g;    # \r too: esptool draws progress with it
+    return $text;
+}
+
 sub NeatoLocal_FlashBlocking($) {
+    return NeatoLocal_OneLine(NeatoLocal_FlashWork($_[0]));
+}
+
+sub NeatoLocal_ProvisionBlocking($) {
+    return NeatoLocal_OneLine(NeatoLocal_ProvisionWork($_[0]));
+}
+
+sub NeatoLocal_FlashWork($) {
     my ($string) = @_;
     my ($name, $port, $image, $ssid, $psk) = split("\\|", $string, 5);
 
@@ -1860,6 +1890,7 @@ sub NeatoLocal_FlashDone($) {
 
     return if (!defined($hash));
     delete $hash->{helper}{flashRunning};
+    RemoveInternalTimer($hash, "NeatoLocal_FlashWatch");
 
     $detail = "" if (!defined($detail));
     $ip = "" if (!defined($ip));
@@ -1886,11 +1917,29 @@ sub NeatoLocal_FlashDone($) {
     return undef;
 }
 
+# Neither Done nor Aborted is guaranteed: a result that cannot be delivered
+# leaves the job marked finished, so Blocking.pm never calls the abort function
+# either. Without this the reading says "running" until FHEM restarts.
+sub NeatoLocal_FlashWatch($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    return undef if (!$hash->{helper}{flashRunning});
+
+    delete $hash->{helper}{flashRunning};
+    Log3 $name, 1, "NeatoLocal ($name) - the background run never reported back";
+    readingsSingleUpdate($hash, "lastFlash",
+                         "no answer from the background run", 1);
+    return undef;
+}
+
 sub NeatoLocal_FlashAborted($) {
     my ($hash) = @_;
     my $name = (ref($hash) eq "HASH") ? $hash->{NAME} : $hash;
 
     delete $defs{$name}{helper}{flashRunning} if (defined($defs{$name}));
+    RemoveInternalTimer($defs{$name}, "NeatoLocal_FlashWatch")
+        if (defined($defs{$name}));
     Log3 $name, 1, "NeatoLocal ($name) - flashing timed out";
     readingsSingleUpdate($defs{$name}, "lastFlash", "timeout", 1)
         if (defined($defs{$name}));
@@ -2048,7 +2097,7 @@ sub NeatoLocal_ConsoleAsk($$$$) {
     return $reply;
 }
 
-sub NeatoLocal_ProvisionBlocking($) {
+sub NeatoLocal_ProvisionWork($) {
     my ($string) = @_;
     my ($name, $port, $ssid, $psk) = split("\\|", $string, 4);
 
@@ -2118,6 +2167,7 @@ sub NeatoLocal_ProvisionDone($) {
 
     return if (!defined($hash));
     delete $hash->{helper}{flashRunning};
+    RemoveInternalTimer($hash, "NeatoLocal_FlashWatch");
 
     $detail = "" if (!defined($detail));
 

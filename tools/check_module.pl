@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 231;
+use Test::More tests => 241;
 
 package main;
 
@@ -867,3 +867,42 @@ is("$us|$up", "WaxWeazle|secret", "unquoted values come through unchanged");
 my ($ms, $mp) = NeatoLocal_SplitCredentials("WaxWeazle");
 is($ms, "WaxWeazle", "a name without a password is still returned");
 is($mp, undef, "and the missing password is distinguishable from an empty one");
+
+# --- a worker's result has to survive the trip back to FHEM -----------------
+# Blocking.pm delivers it as one telnet line. A newline in it breaks the command
+# in half, the callback never runs, and nothing is logged -- the run vanishes and
+# the device keeps saying "running". This is what that failure looked like.
+is(NeatoLocal_OneLine("esptool v4.7\nWriting at 0x1000\nHash of data verified"),
+   "esptool v4.7 -- Writing at 0x1000 -- Hash of data verified",
+   "a multi-line tool output is folded onto one line");
+unlike(NeatoLocal_OneLine("a\nb"), qr/\n/, "no newline survives");
+unlike(NeatoLocal_OneLine("Writing\rat 50%\rat 100%"), qr/\r/,
+       "and no carriage return either, which esptool draws progress with");
+is(NeatoLocal_OneLine("done\n\n\n"), "done", "trailing blank lines are dropped");
+is(NeatoLocal_OneLine(undef), "", "an undefined result does not crash the callback");
+
+# The separator must not gain fields: the result is split on '|', so a newline
+# turning into one would move the address into the output field.
+my $folded = NeatoLocal_OneLine("fl|OK|192.168.1.61|Writing\nHash verified");
+is(scalar(split(/\|/, $folded)), 4, "folding does not add fields");
+my (undef, undef, $foldedIp) = split(/\|/, $folded, 4);
+is($foldedIp, "192.168.1.61", "so the address still arrives as the address");
+
+# Neither Done nor Aborted is guaranteed, so the reading must not stay on
+# "running" for ever.
+{
+    my ($wh, $wr) = mkdev("wd NeatoLocal 192.168.1.42:23");
+    $wh->{helper}{flashRunning} = time();
+    readingsSingleUpdate($wh, "lastFlash", "running", 1);
+
+    NeatoLocal_FlashWatch($wh);
+    is($wh->{helper}{flashRunning}, undef, "the watchdog releases the lock");
+    like(ReadingsVal("wd", "lastFlash", ""), qr/no answer/,
+         "and says the run never reported back");
+
+    # It must not talk over a run that ended properly.
+    readingsSingleUpdate($wh, "lastFlash", "ok, bridge at 192.168.1.61", 1);
+    NeatoLocal_FlashWatch($wh);
+    like(ReadingsVal("wd", "lastFlash", ""), qr/bridge at/,
+         "a finished run is left alone");
+}
