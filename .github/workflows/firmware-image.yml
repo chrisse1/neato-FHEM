@@ -3,13 +3,19 @@ name: Firmware image
 # The ESP32 build embeds its compile time in the application descriptor, so two
 # builds of the same source are never byte identical. Rebuilding on every push
 # would therefore add a megabyte to the repository each time -- hence the path
-# filter: the image is rebuilt exactly when the sketch changes.
+# filter: the image is rebuilt exactly when something it is made of changes.
+#
+# The partition reader belongs in that list: the metadata beside the image tells
+# FHEM where the credentials block goes, and a fix to the reader that never
+# reaches a rebuild leaves an image nobody can provision.
 on:
   push:
     branches: [main]
     paths:
       - 'firmware/neato_bridge/**'
+      - 'tools/partition_offset.py'
       - '.github/workflows/firmware-image.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
