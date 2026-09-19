@@ -1,12 +1,17 @@
 neato_bridge 0.14.0
 board:  ESP32-C3 (fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=min_spiffs,FlashSize=4M)
-built:  2026-09-19 07:57:56 UTC
-commit: cd4da126224edec86a18512e8ed105956e5ac50a
-sha256: 3d8ae2245684eeacd6b8679e27fdb0da2cf7714f6d10021f31fdc9ed68b47e0b
+built:  2026-09-19 08:12:59 UTC
+commit: 1b9d383322ffc440fd5e0ab64cdd57629b2a9db8
+sha256: 4ed7c2b3f6a17ec50af16a0d410a6d3260f28b733b22c50121c00080e455e0ec
 seed offset: 0x3d0000
+app sha256: 5b70c4b8f6a7728a890a952107afb257a39a277a93de70307f3df30d0b992a9b
 
 Write it to offset 0:
   esptool.py --chip esp32c3 -p /dev/ttyACM0 write_flash 0x0 neato_bridge-esp32c3.bin
 
 The credentials block goes to 0x3d0000 on its own; FHEM does that
 in the same pass with: set <device> flashESP "<ssid>" "<password>"
+
+neato_bridge-esp32c3-app.bin is the same application without
+bootloader and partition table, for updates over the air:
+  set <device> otaESP
