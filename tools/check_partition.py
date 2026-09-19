@@ -23,7 +23,14 @@ def check(ok, what):
 
 
 def entry(label, ptype, subtype, offset, size):
-    return (struct.pack("<HBBII", 0xAA50, ptype, subtype, offset, size)
+    """One table entry, byte for byte as it sits on flash.
+
+    The magic is written as the literal bytes ESP-IDF puts there, not taken from
+    the module under test: the first version of this file reused the module's
+    constant, so both had the byte order wrong and the tests passed anyway.
+    """
+    return (b"\xaa\x50"
+            + struct.pack("<BBII", ptype, subtype, offset, size)
             + label.encode().ljust(16, b"\0")
             + struct.pack("<I", 0))
 

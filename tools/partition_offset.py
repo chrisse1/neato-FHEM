@@ -10,7 +10,10 @@ right only for as long as nobody changes the partition scheme.
 import struct
 import sys
 
-MAGIC = 0xAA50
+# The entry starts with the bytes AA 50 on flash, so read as a little-endian
+# uint16 the value is 0x50AA. Getting this the wrong way round finds nothing at
+# all, which is exactly how it failed the first time.
+MAGIC = 0x50AA
 ENTRY_SIZE = 32
 
 
