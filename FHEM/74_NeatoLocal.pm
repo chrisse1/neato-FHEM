@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.12.0";
+my $NeatoLocal_VERSION = "0.12.1";
 
 # Where flashESP gets the image when nothing else is configured. The project's
 # CI builds it on every firmware change, and the text file beside it carries the
@@ -1552,6 +1552,64 @@ sub NeatoLocal_CheckImage($) {
 }
 
 # Runs in a forked child, so a flash of half a minute does not stall FHEM.
+# Wait for a freshly started board and ask where it ended up. The USB port goes
+# away and comes back with the restart, so it is reopened each round rather than
+# held open.
+#
+# The board may need two goes at the network -- one on the radio as the reset
+# left it, one after bringing it down properly -- and then there is the fallback
+# to the access point. Together that is well over half a minute, so the window
+# has to be wide enough not to give up while the board is still working.
+#
+# Runs inside BlockingCall only: it sleeps.
+sub NeatoLocal_AwaitBridge($;$) {
+    my ($port, $rounds) = @_;
+    $rounds = 18 if (!defined($rounds));
+
+    my $reply = "";
+    foreach my $attempt (1 .. $rounds) {
+        sleep(3);
+        next if (!-e $port);
+
+        system("stty -F " . quotemeta($port) . " 115200 cs8 -cstopb -parenb "
+             . "-crtscts -ixon -ixoff raw -echo >/dev/null 2>&1");
+
+        my $fh;
+        next if (!open($fh, "+<", $port));
+
+        my $old = select($fh); $| = 1; select($old);
+        print $fh "\ninfo\n";
+
+        eval {
+            local $SIG{ALRM} = sub { die "timeout\n" };
+            alarm(8);
+            while (my $line = <$fh>) {
+                $reply .= $line;
+                last if ($line =~ m/^mode\s+\S+/);
+            }
+            alarm(0);
+        };
+        alarm(0);
+        close($fh);
+
+        # 0.0.0.0 is what the board reports while it is still trying. Taking it
+        # for an address ends the wait at the very moment there is nothing to
+        # report yet.
+        last if ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/ && $1 ne "0.0.0.0");
+        $reply = "";
+    }
+
+    $reply =~ s/\s+/ /g;
+    $reply =~ s/^\s+|\s+$//g;
+
+    my ($ip)   = ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/);
+    my ($mode) = ($reply =~ m/\bmode\s+(\w+)/);
+
+    $ip = undef if (defined($ip) && $ip eq "0.0.0.0");
+
+    return ($ip, $mode, $reply);
+}
+
 sub NeatoLocal_SlurpFile($) {
     my ($path) = @_;
 
@@ -1710,6 +1768,26 @@ sub NeatoLocal_FlashBlocking($) {
 
         $out .= "\n" . $seedOut;
         $rc = $seedRc if ($seedRc != 0);
+
+        # Writing the credentials is only half the job: without an address the
+        # module has a bridge on the network and no way to reach it. The board
+        # is still on this USB port, so it can simply be asked.
+        if ($seedRc == 0) {
+            my ($ip, $mode, $reply) = NeatoLocal_AwaitBridge($port);
+
+            if (!defined($ip) || (defined($mode) && lc($mode) eq "ap")) {
+                my $status = NeatoLocal_ConsoleAsk($port, "wifi status",
+                                                  qr/^reason\s/m, 10);
+                my $scan = NeatoLocal_ConsoleAsk($port, "wifi scan",
+                                                 qr/OK scan done/, 30);
+                return "$name|written, but the bridge did not reach the network||"
+                     . NeatoLocal_ScanVerdict($ssid, $scan, $status);
+            }
+
+            # The address goes first: esptool's output may contain the
+            # separator, and everything after the third one is that output.
+            return "$name|OK|$ip|$out";
+        }
     }
 
     # keep the tail: the interesting part of an esptool failure is at the end
@@ -1718,22 +1796,33 @@ sub NeatoLocal_FlashBlocking($) {
     $out = join(" | ", @lines[-6 .. -1]) if (@lines > 6);
     $out = join(" | ", @lines) if (@lines <= 6);
 
-    return "$name|" . (($rc == 0) ? "OK|$out" : "failed (rc $rc)|$out");
+    return "$name|" . (($rc == 0) ? "OK||$out" : "failed (rc $rc)||$out");
 }
 
 sub NeatoLocal_FlashDone($) {
     my ($string) = @_;
-    my ($name, $result, $detail) = split("\\|", $string, 3);
+    my ($name, $result, $ip, $detail) = split("\\|", $string, 4);
     my $hash = $defs{$name};
 
     return if (!defined($hash));
     delete $hash->{helper}{flashRunning};
 
     $detail = "" if (!defined($detail));
+    $ip = "" if (!defined($ip));
 
     if ($result eq "OK") {
         Log3 $name, 3, "NeatoLocal ($name) - flashing finished: $detail";
-        readingsSingleUpdate($hash, "lastFlash", "ok", 1);
+
+        if ($ip ne "") {
+            readingsBeginUpdate($hash);
+            readingsBulkUpdate($hash, "lastFlash", "ok, bridge at $ip");
+            readingsBulkUpdate($hash, "bridgeAddress", $ip);
+            readingsEndUpdate($hash, 1);
+            NeatoLocal_AdoptBridgeAddress($hash, $ip);
+        }
+        else {
+            readingsSingleUpdate($hash, "lastFlash", "ok", 1);
+        }
     }
     else {
         Log3 $name, 1, "NeatoLocal ($name) - flashing $result: $detail";
@@ -1947,55 +2036,10 @@ sub NeatoLocal_ProvisionBlocking($) {
     return "$name|no answer -- is the board running the bridge firmware?"
         if (!$saved);
 
-    # Wait out the restart, then ask where it ended up. The USB port goes away
-    # and comes back with it, so the port is reopened rather than kept.
-    # The board may need two attempts now: one on the radio as the reset left
-    # it, and one after bringing it down properly. Together with the fallback
-    # that is well over half a minute, so the window has to be wide enough not
-    # to give up while the board is still working on it.
-    my $reply = "";
-    foreach my $attempt (1 .. 18) {
-        sleep(3);
-        next if (!-e $port);
-
-        system("stty -F " . quotemeta($port) . " 115200 cs8 -cstopb -parenb "
-             . "-crtscts -ixon -ixoff raw -echo >/dev/null 2>&1");
-        next if (!open($fh, "+<", $port));
-
-        my $old2 = select($fh); $| = 1; select($old2);
-        print $fh "\ninfo\n";
-
-        eval {
-            local $SIG{ALRM} = sub { die "timeout\n" };
-            alarm(8);
-            while (my $line = <$fh>) {
-                $reply .= $line;
-                last if ($line =~ m/^mode\s+\S+/);
-            }
-            alarm(0);
-        };
-        alarm(0);
-        close($fh);
-
-        # 0.0.0.0 is what the board reports while it is still trying. Taking
-        # it for an address ends the wait at the very moment there is nothing
-        # to report yet.
-        last if ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/ && $1 ne "0.0.0.0");
-        $reply = "";
-    }
-
-    $reply =~ s/\s+/ /g;
-    $reply =~ s/^\s+|\s+$//g;
+    my ($ip, $mode, $reply) = NeatoLocal_AwaitBridge($port);
 
     return "$name|saved, but the board did not report back after restarting"
         if ($reply eq "");
-
-    my ($ip) = ($reply =~ m/\bip\s+(\d+\.\d+\.\d+\.\d+)/);
-    my ($mode) = ($reply =~ m/\bmode\s+(\w+)/);
-
-    # Still trying, not an address -- and an address is what the caller would
-    # otherwise be handed to point the device at.
-    $ip = undef if (defined($ip) && $ip eq "0.0.0.0");
 
     # 192.168.4.1 is the setup access point: saved, but not on the network.
     if (!defined($ip) || (defined($mode) && lc($mode) eq "ap")) {
@@ -2035,26 +2079,37 @@ sub NeatoLocal_ProvisionDone($) {
     readingsBulkUpdate($hash, "bridgeAddress", $detail);
     readingsEndUpdate($hash, 1);
 
-    # A device defined without an address was waiting for exactly this. Point it
-    # at the bridge that just came up, so the whole path from a blank board to a
-    # working device needs no hand-edited definition.
-    #
-    # A device that already has an address keeps it: silently repointing a
-    # working device would be the wrong kind of helpful.
-    if ($hash->{TRANSPORT} eq "none" && $detail =~ m/^\d+\.\d+\.\d+\.\d+$/) {
-        Log3 $name, 3, "NeatoLocal ($name) - pointing the device at $detail:23";
-        my $err = CommandModify(undef, "$name $detail:23");
+    NeatoLocal_AdoptBridgeAddress($hash, $detail);
+
+    return undef;
+}
+
+# A device defined without an address was waiting for exactly this. Point it at
+# the bridge that just came up, so the whole path from a blank board to a working
+# device needs no hand-edited definition.
+#
+# A device that already has an address keeps it: silently repointing a working
+# device would be the wrong kind of helpful.
+sub NeatoLocal_AdoptBridgeAddress($$) {
+    my ($hash, $ip) = @_;
+    my $name = $hash->{NAME};
+
+    return undef if (!defined($ip) || $ip !~ m/^\d+\.\d+\.\d+\.\d+$/);
+
+    if ($hash->{TRANSPORT} eq "none") {
+        Log3 $name, 3, "NeatoLocal ($name) - pointing the device at $ip:23";
+        my $err = CommandModify(undef, "$name $ip:23");
         if ($err) {
             Log3 $name, 1, "NeatoLocal ($name) - could not set the address: $err";
         }
         else {
-            Log3 $name, 2, "NeatoLocal ($name) - address set to $detail:23. "
+            Log3 $name, 2, "NeatoLocal ($name) - address set to $ip:23. "
                          . "Run 'save' to keep it across a restart.";
         }
     }
-    elsif ($hash->{TRANSPORT} ne "none") {
+    else {
         Log3 $name, 3, "NeatoLocal ($name) - the device keeps its address; "
-                     . "change it with 'modify $name $detail:23' if wanted";
+                     . "change it with 'modify $name $ip:23' if wanted";
     }
 
     return undef;

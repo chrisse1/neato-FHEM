@@ -242,6 +242,11 @@ neben dem Image, die die CI aus der Partitionstabelle *dieses* Images erzeugt �
 eine hier eingetragene Zahl wäre nur so lange richtig, bis jemand das
 Partitionsschema ändert.
 
+Am Ende fragt `flashESP` das Board über denselben USB-Port, welche Adresse es
+im Netz bekommen hat, schreibt sie ins Reading `bridgeAddress` und richtet ein
+ohne Adresse definiertes Gerät darauf aus. Ohne das hätte man eine Brücke im
+Netz und keinen Weg, sie anzusprechen.
+
 Ein eigenes Image geht weiterhin vor: `set Staubsauger flashESP /pfad/zum.bin`,
 oder dauerhaft über das Attribut `espImage`. Fehlt die Textdatei daneben,
 werden keine Zugangsdaten geschrieben, und das Modul sagt das, statt ein halb

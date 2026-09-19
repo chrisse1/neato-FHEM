@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 225;
+use Test::More tests => 230;
 
 package main;
 
@@ -424,11 +424,22 @@ is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
     delete $fh->{helper}{flashRunning};
     like(NeatoLocal_Set($fh, "fl", "wifiESP"), qr/usage/, "wifiESP needs arguments");
 
-    # the results have to land in readings
+    # the results have to land in readings. The address field sits before the
+    # tool output, which may itself contain the separator.
     $fh->{helper}{flashRunning} = 1;
-    NeatoLocal_FlashDone("fl|OK|Hash of data verified");
+    NeatoLocal_FlashDone("fl|OK||Hash of data verified");
     is(ReadingsVal("fl", "lastFlash", ""), "ok", "a successful flash is recorded");
     is($fh->{helper}{flashRunning}, undef, "and the run is marked finished");
+
+    # Flashed with credentials: the board is asked where it ended up, because a
+    # bridge on the network that the module cannot address is no use.
+    $fh->{helper}{flashRunning} = 1;
+    NeatoLocal_FlashDone("fl|OK|192.168.1.61|Hash of data verified | Leaving...");
+    is(ReadingsVal("fl", "bridgeAddress", ""), "192.168.1.61",
+       "flashing with credentials reports the address too");
+    like(ReadingsVal("fl", "lastFlash", ""), qr/ok, bridge at 192\.168\.1\.61/,
+         "and says so rather than just 'ok'");
+    readingsSingleUpdate($fh, "bridgeAddress", "", 1);
 
     # the failure messages have to say what to do, not just that it failed
     NeatoLocal_ProvisionDone("fl|credentials stored, but the board could not "
@@ -444,7 +455,22 @@ is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
     is(ReadingsVal("fl", "bridgeAddress", ""), "192.168.1.57",
        "provisioning reports the address the bridge took");
 
-    NeatoLocal_FlashDone("fl|failed (rc 2)|A fatal error occurred");
+    # Both routes into the module share one way of adopting an address, so a
+    # device defined without one ends up pointed at the bridge either way.
+    {
+        my ($uh, $ur) = mkdev("un2 NeatoLocal");
+        @MODIFIED = ();
+        NeatoLocal_FlashDone("un2|OK|192.168.1.62|written");
+        is(scalar(@MODIFIED), 1, "flashing points an unconfigured device at the bridge");
+        is($MODIFIED[0], "un2 192.168.1.62:23", "with the address the board reported");
+
+        my ($ch, $cr) = mkdev("cfg2 NeatoLocal 192.168.1.5:23");
+        @MODIFIED = ();
+        NeatoLocal_FlashDone("cfg2|OK|192.168.1.63|written");
+        is(scalar(@MODIFIED), 0, "a device that has an address keeps it");
+    }
+
+    NeatoLocal_FlashDone("fl|failed (rc 2)||A fatal error occurred");
     like(ReadingsVal("fl", "lastFlash", ""), qr/fatal/, "a failure keeps its reason");
 
     # nothing that is not a firmware image may reach the board
