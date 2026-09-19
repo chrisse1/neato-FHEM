@@ -38,7 +38,7 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.16.0";
+my $NeatoLocal_VERSION = "0.17.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -194,6 +194,7 @@ sub NeatoLocal_Initialize($) {
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
                       . "interval timeout connectTimeout espPort espImage "
                       . "espAppImage trackRuns:0,1 trackDir trackInterval "
+                      . "trackKeepDays "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1144,6 +1145,58 @@ sub NeatoLocal_ParsePose($) {
     return ($x + 0, $y + 0, $theta + 0, $time + 0);
 }
 
+# Sessions are files, and files stay until somebody removes them. Deleting is
+# the one thing here that cannot be taken back, so it is fenced in: only inside
+# the configured directory, only names this module writes itself, only older
+# than the cutoff, and never the session currently being recorded.
+sub NeatoLocal_TrackSweep($;$) {
+    my ($hash, $now) = @_;
+    my $name = $hash->{NAME};
+
+    my $days = AttrVal($name, "trackKeepDays", 14);
+    return 0 if ($days !~ m/^\d+$/ || $days == 0);   # 0 keeps everything
+
+    my $dir = AttrVal($name, "trackDir", "./www/neato");
+    return 0 if (!-d $dir);
+
+    $now = time() if (!defined($now));
+    my $cutoff = $now - $days * 86400;
+    my $open = $hash->{helper}{track} ? $hash->{helper}{track}{file} : "";
+    $open = "" if (!defined($open));
+
+    my $dh;
+    return 0 if (!opendir($dh, $dir));
+    my @entries = readdir($dh);
+    closedir($dh);
+
+    my $removed = 0;
+    foreach my $entry (@entries) {
+        # Exactly what TrackStart writes, nothing else. A directory full of
+        # other people's files is not ours to tidy.
+        next if ($entry !~ m/^\Q$name\E-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.jsonl$/);
+
+        my $path = "$dir/$entry";
+        next if (!-f $path);
+        next if ($path eq $open);
+
+        my $age = (stat($path))[9];
+        next if (!defined($age) || $age >= $cutoff);
+
+        if (unlink($path)) {
+            $removed++;
+        }
+        else {
+            Log3 $name, 2, "NeatoLocal ($name) - cannot remove $path: $!";
+        }
+    }
+
+    Log3 $name, 3, "NeatoLocal ($name) - removed $removed track file(s) older "
+                 . "than $days days"
+        if ($removed);
+
+    return $removed;
+}
+
 sub NeatoLocal_TrackStart($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
@@ -1270,6 +1323,10 @@ sub NeatoLocal_TrackStop($) {
     readingsBulkUpdate($hash, "trackDuration", $seconds);
     readingsEndUpdate($hash, 1);
 
+    # Right after a run: a new file exists, the robot is on its dock and nothing
+    # is waiting on the console.
+    NeatoLocal_TrackSweep($hash);
+
     return undef;
 }
 
@@ -1336,7 +1393,7 @@ sub NeatoLocal_UpdateState($) {
     # Recording follows the run rather than a command: a cleaning started at the
     # robot's own button, or by its schedule, is the one nobody is watching and
     # the one worth having a track of.
-    if (AttrVal($name, "trackRuns", 1) && $hash->{TRANSPORT} ne "none") {
+    if (AttrVal($name, "trackRuns", 0) && $hash->{TRANSPORT} ne "none") {
         my $running = ($state =~ m/^(cleaning|paused|suspended)$/) ? 1 : 0;
 
         NeatoLocal_TrackStart($hash) if ($running && !$hash->{helper}{track});
@@ -2932,9 +2989,14 @@ sub NeatoLocal_LeaveTestMode($) {
         flashed, default /dev/ttyACM0</li>
     <li><b>espImage</b> - image flashESP writes instead of the one this project publishes</li>
     <li><b>espAppImage</b> - application otaESP sends instead of the published one</li>
-    <li><b>trackRuns</b> - record the driven track while the robot cleans (default 1)</li>
+    <li><b>trackRuns</b> - record the driven track while the robot cleans. Off by
+        default: it writes a file per run, which is of no use to anyone who does
+        not draw it somewhere</li>
     <li><b>trackDir</b> - where the session files go, default ./www/neato</li>
     <li><b>trackInterval</b> - seconds between pose samples, default 3</li>
+    <li><b>trackKeepDays</b> - how long finished sessions are kept, default 14.
+        Swept after each run; 0 keeps them for good. Only files this device
+        wrote itself are ever removed</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -3137,9 +3199,14 @@ sub NeatoLocal_LeaveTestMode($) {
         haengt, Standard /dev/ttyACM0</li>
     <li><b>espImage</b> - Image, das flashESP statt des von diesem Projekt veroeffentlichten schreibt</li>
     <li><b>espAppImage</b> - Anwendung, die otaESP statt der veroeffentlichten sendet</li>
-    <li><b>trackRuns</b> - zeichnet die gefahrene Spur waehrend der Reinigung auf (Standard 1)</li>
+    <li><b>trackRuns</b> - zeichnet die gefahrene Spur waehrend der Reinigung auf.
+        Standardmaessig aus: es entsteht eine Datei je Lauf, und die nuetzt
+        niemandem, der sie nirgends darstellt</li>
     <li><b>trackDir</b> - wohin die Sitzungsdateien gehen, Standard ./www/neato</li>
     <li><b>trackInterval</b> - Sekunden zwischen zwei Positionsabfragen, Standard 3</li>
+    <li><b>trackKeepDays</b> - wie lange fertige Sitzungen bleiben, Standard 14.
+        Aufgeraeumt wird nach jedem Lauf; 0 behaelt alles. Entfernt werden nur
+        Dateien, die dieses Geraet selbst geschrieben hat</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,

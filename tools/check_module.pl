@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 279;
+use Test::More tests => 289;
 
 package main;
 
@@ -1052,4 +1052,57 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     like($lines[1], qr/^\{"t":100\.00,"x":0\.000,"y":0\.000,"th":0\.0\}$/,
          "a sample is one JSON object per line");
     like($lines[-1], qr/"summary":.*"points":5/, "and the summary closes it");
+}
+
+# --- off unless asked for, and careful about deleting ----------------------
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my ($sh2, $sr) = mkdev("swp NeatoLocal 192.168.1.42:23");
+    $attr{"swp"}{trackDir} = $dir;
+
+    # Not everyone draws maps, so nothing is recorded until somebody says so.
+    delete $attr{"swp"}{trackRuns};
+    readingsSingleUpdate($sh2, "isCleaning", 1, 1);
+    $sh2->{helper}{assumeCleaning} = 1;
+    NeatoLocal_UpdateState($sh2);
+    is($sh2->{helper}{track}, undef, "recording is off unless it is switched on");
+
+    $attr{"swp"}{trackRuns} = 1;
+    NeatoLocal_UpdateState($sh2);
+    ok($sh2->{helper}{track}, "and starts once it is");
+    my $live = $sh2->{helper}{track}{file};
+
+    # A directory holding one old session of ours, one fresh one, one from
+    # another device and one file that is simply not ours.
+    my $now = time();
+    my %made;
+    foreach my $f (["swp-2020-01-01_10-00-00.jsonl", 40],
+                   ["swp-2020-02-02_10-00-00.jsonl", 3],
+                   ["other-2020-01-01_10-00-00.jsonl", 40],
+                   ["swp-notes.txt", 40]) {
+        my $path = "$dir/$f->[0]";
+        open(my $fh, ">", $path); print $fh "x\n"; close($fh);
+        utime($now - $f->[1] * 86400, $now - $f->[1] * 86400, $path);
+        $made{$f->[0]} = $path;
+    }
+
+    $attr{"swp"}{trackKeepDays} = 14;
+    my $removed = NeatoLocal_TrackSweep($sh2, $now);
+
+    is($removed, 1, "only what is past the cutoff goes");
+    ok(!-e $made{"swp-2020-01-01_10-00-00.jsonl"}, "the old session is gone");
+    ok(-e $made{"swp-2020-02-02_10-00-00.jsonl"}, "a recent one is kept");
+    ok(-e $made{"other-2020-01-01_10-00-00.jsonl"},
+       "another device's session is not ours to remove");
+    ok(-e $made{"swp-notes.txt"}, "and neither is a file we never wrote");
+    ok(-e $live, "the session being recorded is never deleted");
+
+    # Keeping everything has to be possible, and has to be the effect of 0.
+    open(my $fh2, ">", "$dir/swp-2019-01-01_10-00-00.jsonl"); close($fh2);
+    utime($now - 999 * 86400, $now - 999 * 86400, "$dir/swp-2019-01-01_10-00-00.jsonl");
+    $attr{"swp"}{trackKeepDays} = 0;
+    is(NeatoLocal_TrackSweep($sh2, $now), 0, "0 days keeps everything");
+    ok(-e "$dir/swp-2019-01-01_10-00-00.jsonl", "even something ancient");
+
+    NeatoLocal_TrackStop($sh2);
 }

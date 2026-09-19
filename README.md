@@ -376,8 +376,24 @@ den Readings `trackPoints`, `trackDistance` und `trackDuration`, der Dateiname
 in `trackFile` – für Kacheln in FTUI3 reichen die Readings, die Karte liest die
 Datei.
 
-Standardverzeichnis ist `./www/neato`, also `/opt/fhem/www/neato`. Abschalten
-mit `attr <dev> trackRuns 0`.
+**Standardmäßig ist das aus.** Es entsteht eine Datei je Lauf, und die nützt
+niemandem, der sie nirgends darstellt:
+
+```
+attr Staubsauger trackRuns 1
+```
+
+Standardverzeichnis ist `./www/neato`, also `/opt/fhem/www/neato`.
+
+Fertige Sitzungen werden nach `trackKeepDays` Tagen entfernt, Standard 14;
+`0` behält alles. Aufgeräumt wird nach jedem Lauf – dann liegt die neue Datei
+schon da, der Roboter steht auf der Basis und niemand wartet auf die Konsole.
+
+Gelöscht wird dabei eng umgrenzt, denn das ist der einzige Schritt hier, der
+sich nicht rückgängig machen lässt: nur innerhalb von `trackDir`, nur Namen im
+Muster `<Gerät>-<Zeitstempel>.jsonl`, nur älter als die Grenze – und nie die
+Sitzung, die gerade geschrieben wird. Eigene Dateien im selben Verzeichnis und
+Sitzungen eines anderen Geräts bleiben unangetastet.
 
 ### Explore und Persistent brauchen die App
 
