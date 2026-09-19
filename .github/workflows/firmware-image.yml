@@ -56,15 +56,26 @@ jobs:
       - name: Record what the image contains
         run: |
           version=$(grep -oP 'VERSION = "\K[^"]+' firmware/neato_bridge/neato_bridge.ino)
+
+          # Where a board gets its network handed to it at flash time. Read out
+          # of the partition table that ships inside this very image, so the
+          # two cannot drift apart.
+          seed=$(python3 tools/partition_offset.py \
+                   build/neato_bridge.ino.partitions.bin spiffs)
+
           {
             echo "neato_bridge $version"
             echo "board:  ESP32-C3 (fqbn $FQBN)"
             echo "built:  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "commit: $GITHUB_SHA"
             echo "sha256: $(sha256sum firmware/prebuilt/neato_bridge-esp32c3.bin | cut -d' ' -f1)"
+            echo "seed offset: $seed"
             echo
             echo "Write it to offset 0:"
             echo "  esptool.py --chip esp32c3 -p /dev/ttyACM0 write_flash 0x0 neato_bridge-esp32c3.bin"
+            echo
+            echo "The credentials block goes to $seed on its own; FHEM does that"
+            echo "in the same pass with: set <device> flashESP \"<ssid>\" \"<password>\""
           } > firmware/prebuilt/neato_bridge-esp32c3.txt
           cat firmware/prebuilt/neato_bridge-esp32c3.txt
 

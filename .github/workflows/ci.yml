@@ -23,6 +23,9 @@ jobs:
       - name: Check the console dump tool
         run: python3 tools/check_dump.py
 
+      - name: Check the partition table reader
+        run: python3 tools/check_partition.py
+
   firmware:
     name: Bridge (${{ matrix.name }})
     runs-on: ubuntu-latest

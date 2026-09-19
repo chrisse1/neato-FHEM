@@ -61,6 +61,7 @@
   #include <Preferences.h>
   #include <esp_wifi.h>         // esp_wifi_set_country_code()
   #include <esp_system.h>       // esp_reset_reason()
+  #include <esp_partition.h>    // the credentials block written at flash time
   #define ROBOT Serial1         // dedicated UART, USB CDC stays free
   #define HAVE_CONFIG_STORE 1   // credentials live in NVS, not in this file
 #else
@@ -94,7 +95,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.12.1";
+static const char *VERSION = "0.13.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -151,8 +152,77 @@ static bool isPlaceholder(const String &ssid) {
   return ssid.length() == 0 || ssid == "your-ssid";
 }
 
+// A freshly flashed board can be handed its network in the same pass: the
+// flashing tool writes a small block into the storage partition, and the first
+// boot takes it into NVS and wipes it again. That removes the console dialogue
+// and with it the software restart the dialogue needed -- the board comes up
+// out of a real reset already knowing where to connect.
+//
+// The block is deliberately not checksummed. The magic word plus the length
+// bounds already rule out erased flash and a short write, and two independent
+// checksum implementations that must agree byte for byte would be a worse risk
+// than the one they cover.
+#define SEED_MAGIC     "NEATOSEED1"
+#define SEED_MAGIC_LEN 10
+#define SEED_SSID_MAX  32
+#define SEED_PSK_MAX   64
+#define SEED_SIZE      128
+
+static bool seedUsed = false;      // for the boot log: where the network came from
+
+#if HAVE_CONFIG_STORE
+static bool configSeedTake(String &ssid, String &psk) {
+  const esp_partition_t *part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+  if (part == NULL) {
+    return false;
+  }
+
+  uint8_t buf[SEED_SIZE];
+  if (esp_partition_read(part, 0, buf, sizeof(buf)) != ESP_OK) {
+    return false;
+  }
+  if (memcmp(buf, SEED_MAGIC, SEED_MAGIC_LEN) != 0) {
+    return false;
+  }
+
+  uint8_t ssidLen = buf[SEED_MAGIC_LEN];
+  uint8_t pskLen  = buf[SEED_MAGIC_LEN + 1];
+  if (ssidLen == 0 || ssidLen > SEED_SSID_MAX || pskLen > SEED_PSK_MAX) {
+    return false;
+  }
+
+  char ssidBuf[SEED_SSID_MAX + 1];
+  char pskBuf[SEED_PSK_MAX + 1];
+  memcpy(ssidBuf, buf + SEED_MAGIC_LEN + 2, ssidLen);
+  ssidBuf[ssidLen] = '\0';
+  memcpy(pskBuf, buf + SEED_MAGIC_LEN + 2 + SEED_SSID_MAX, pskLen);
+  pskBuf[pskLen] = '\0';
+
+  ssid = String(ssidBuf);
+  psk = String(pskBuf);
+
+  // One shot: wiped so that a later change over the console is not overruled on
+  // the next boot, and so the password does not sit in flash beyond the moment
+  // it is needed.
+  esp_partition_erase_range(part, 0, 4096);
+  return true;
+}
+#endif
+
 static void configLoad() {
 #if HAVE_CONFIG_STORE
+  // Whatever the flashing tool left behind wins: it is newer than anything in
+  // NVS by definition, and it is gone after this.
+  String seedSsid, seedPsk;
+  if (configSeedTake(seedSsid, seedPsk)) {
+    prefs.begin("neato", false);
+    prefs.putString("ssid", seedSsid);
+    prefs.putString("psk", seedPsk);
+    prefs.end();
+    seedUsed = true;
+  }
+
   prefs.begin("neato", true);
   wifiSsid = prefs.getString("ssid", "");
   wifiPsk = prefs.getString("psk", "");
@@ -586,7 +656,8 @@ static void setupWifi() {
   // The stored name, not the compile-time default: which of the two is in use
   // is exactly the question when the board does not come up on the network.
   dbg(String(F("connecting to '")) + wifiSsid + F("' (")
-      + (int)wifiPsk.length() + F(" character password)"));
+      + (int)wifiPsk.length() + F(" character password")
+      + (seedUsed ? F(", from the flashed block)") : F(")")));
 
   apMode = false;
   WiFi.persistent(false);

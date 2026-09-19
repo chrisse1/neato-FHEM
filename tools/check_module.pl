@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 205;
+use Test::More tests => 225;
 
 package main;
 
@@ -387,14 +387,19 @@ is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
     $attr{"fl"}{espPort} = "/dev/ttyACM9";
     @BLOCKING = ();
 
-    like(NeatoLocal_Set($fh, "fl", "flashESP"), qr/espImage/,
-         "flashESP without an image says where to get one");
-    is(scalar(@BLOCKING), 0, "and forks nothing");
+    # No image named: the one this project builds is the sensible default, so
+    # nothing has to be downloaded by hand before a board can be flashed.
+    NeatoLocal_Set($fh, "fl", "flashESP");
+    is(scalar(@BLOCKING), 1, "flashESP without an image falls back to the built one");
+    like($BLOCKING[0][1], qr{\|https://[^|]*neato_bridge-esp32c3\.bin\|},
+         "and that is the image CI publishes");
+    delete $defs{"fl"}{helper}{flashRunning};
+    @BLOCKING = ();
 
     NeatoLocal_Set($fh, "fl", "flashESP", "/tmp/neato.bin");
     is(scalar(@BLOCKING), 1, "flashESP runs in the background");
     is($BLOCKING[0][0], "NeatoLocal_FlashBlocking", "with the flashing worker");
-    is($BLOCKING[0][1], "fl|/dev/ttyACM9|/tmp/neato.bin",
+    is($BLOCKING[0][1], "fl|/dev/ttyACM9|/tmp/neato.bin||",
        "and is told device, port and image");
     is(ReadingsVal("fl", "lastFlash", ""), "running", "the run is visible as a reading");
 
@@ -788,3 +793,43 @@ unlike($verdict, qr/WPA3/, "a WPA2 network is not accused of a WPA3 problem");
 
 $verdict = NeatoLocal_ScanVerdict("WaxWeazle", $scan_missing, $status_none);
 like($verdict, qr/not on the air/, "with no reason recorded the scan decides again");
+
+# --- credentials handed over at flash time ----------------------------------
+# The block the firmware reads on its first boot. Its layout is a contract with
+# the firmware's SEED_* defines, so it is pinned down here byte for byte.
+my $blob = NeatoLocal_SeedBlob("WaxWeazle", "sixteencharacter");
+is(length($blob), 128, "the credentials block is one flash write");
+is(substr($blob, 0, 10), "NEATOSEED1", "it is recognisable");
+is(ord(substr($blob, 10, 1)), 9, "the name length is stated");
+is(ord(substr($blob, 11, 1)), 16, "the password length too");
+is(substr($blob, 12, 9), "WaxWeazle", "the name sits at a fixed offset");
+is(substr($blob, 12 + 32, 16), "sixteencharacter", "and so does the password");
+is(substr($blob, 108), "\xFF" x 20, "the rest is what erased flash holds");
+
+# A name with a space is exactly why the arguments are quoted, so it has to
+# survive into the block.
+$blob = NeatoLocal_SeedBlob("My WLAN", "pass phrase");
+is(substr($blob, 12, 7), "My WLAN", "a name with a space survives");
+is(substr($blob, 12 + 32, 11), "pass phrase", "a password with a space too");
+
+is(NeatoLocal_SeedBlob("", "x"), undef, "an empty name is refused");
+is(NeatoLocal_SeedBlob("x" x 33, "y"), undef, "an over-long name is refused");
+is(NeatoLocal_SeedBlob("x", "y" x 65), undef, "an over-long password is refused");
+isnt(NeatoLocal_SeedBlob("x", ""), undef, "an open network needs no password");
+
+# The offset is read from the metadata CI writes beside the image.
+my $meta = "neato_bridge 0.13.0\nboard:  ESP32-C3\nseed offset: 0x3d0000\n";
+is(NeatoLocal_SeedOffset($meta), "0x3d0000", "the offset comes from the metadata");
+is(NeatoLocal_SeedOffset("neato_bridge 0.9.0\n"), undef,
+   "an image without it is recognised as such");
+is(NeatoLocal_SeedOffset(undef), undef, "and a missing file does not crash the run");
+
+# Quoted or not must not change what arrives -- and whatever follows the name
+# is the password, spaces and all.
+my ($qs, $qp) = NeatoLocal_SplitCredentials('"My WLAN"', '"pass phrase"');
+my ($us, $up) = NeatoLocal_SplitCredentials("WaxWeazle", "secret");
+is("$qs|$qp", "My WLAN|pass phrase", "quoted values lose their quotes");
+is("$us|$up", "WaxWeazle|secret", "unquoted values come through unchanged");
+my ($ms, $mp) = NeatoLocal_SplitCredentials("WaxWeazle");
+is($ms, "WaxWeazle", "a name without a password is still returned");
+is($mp, undef, "and the missing password is distinguishable from an empty one");

@@ -32,7 +32,14 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.11.8";
+my $NeatoLocal_VERSION = "0.12.0";
+
+# Where flashESP gets the image when nothing else is configured. The project's
+# CI builds it on every firmware change, and the text file beside it carries the
+# offset of the partition the credentials block goes to.
+my $NeatoLocal_imageURL =
+    "https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/"
+  . "firmware/prebuilt/neato_bridge-esp32c3.bin";
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -1235,38 +1242,57 @@ sub NeatoLocal_Set($@) {
         if ($cmd eq "flashESP") {
             # The bridge is powered by the robot, so it cannot be flashed while
             # it is installed -- this is for a board on the FHEM machine's USB.
-            my $image = defined($args[0]) ? $args[0]
-                      : AttrVal($name, "espImage", "");
-            return "usage: set $name flashESP <image file>, or set the "
-                 . "attribute espImage. The image is built by this project's "
-                 . "CI and lives in firmware/prebuilt/."
+            #
+            # An image may be named first, but it rarely has to be: without one
+            # the attribute decides, and without that the image this project
+            # builds is fetched. What is usually wanted here is the network:
+            #   set <dev> flashESP "My WLAN" "secret phrase"
+            my @rest = @args;
+            my $image = "";
+            if (defined($rest[0])
+                && ($rest[0] =~ m/^https?:\/\//i || $rest[0] =~ m/\.bin$/i
+                    || -e $rest[0])) {
+                $image = shift(@rest);
+            }
+            $image = AttrVal($name, "espImage", $NeatoLocal_imageURL)
                 if ($image eq "");
 
-            $hash->{helper}{flashRunning} = 1;
-            readingsSingleUpdate($hash, "lastFlash", "running", 1);
-            Log3 $name, 3, "NeatoLocal ($name) - flashing $image to $port";
+            my ($ssid, $psk) = NeatoLocal_SplitCredentials(@rest);
 
-            BlockingCall("NeatoLocal_FlashBlocking", "$name|$port|$image",
-                         "NeatoLocal_FlashDone", 180,
+            return "usage: set $name flashESP [<image or url>] "
+                 . "[<ssid> <password>]\n"
+                 . "Quote values containing spaces: flashESP \"My WLAN\" \"secret\""
+                if (defined($ssid) && !defined($psk));
+
+            if (defined($ssid) && !defined(NeatoLocal_SeedBlob($ssid, $psk))) {
+                return "the network name must be 1 to 32 characters and the "
+                     . "password at most 64";
+            }
+
+            $hash->{helper}{flashRunning} = 1;
+            readingsSingleUpdate($hash, "lastFlash",
+                                 defined($ssid)
+                                 ? "running, with '$ssid' and a "
+                                   . length($psk) . " character password"
+                                 : "running", 1);
+            Log3 $name, 3, "NeatoLocal ($name) - flashing $image to $port"
+                         . (defined($ssid) ? " with network '$ssid', "
+                                           . length($psk) . " character password"
+                                           : "");
+
+            BlockingCall("NeatoLocal_FlashBlocking",
+                         "$name|$port|$image|"
+                       . (defined($ssid) ? "$ssid|$psk" : "|"),
+                         "NeatoLocal_FlashDone", 240,
                          "NeatoLocal_FlashAborted", $hash);
             return undef;
         }
 
-        # FHEM has already split the arguments, so rejoin and parse again --
-        # both a network name and a password may contain spaces, and then they
-        # have to be quoted: set <dev> wifiESP "My WLAN" "secret phrase"
-        my $line = join(" ", @args);
-        my @parts;
-        while ($line =~ m/\G\s*(?:"([^"]*)"|(\S+))/gc) {
-            push @parts, defined($1) ? $1 : $2;
-        }
+        my ($ssid, $psk) = NeatoLocal_SplitCredentials(@args);
 
         return "usage: set $name wifiESP <ssid> <password>\n"
              . "Quote values containing spaces: wifiESP \"My WLAN\" \"secret\""
-            if (!@parts);
-
-        my $ssid = shift(@parts);
-        my $psk  = join(" ", @parts);
+            if (!defined($ssid) || !defined($psk));
 
         $hash->{helper}{flashRunning} = 1;
 
@@ -1526,9 +1552,80 @@ sub NeatoLocal_CheckImage($) {
 }
 
 # Runs in a forked child, so a flash of half a minute does not stall FHEM.
+sub NeatoLocal_SlurpFile($) {
+    my ($path) = @_;
+
+    my $fh;
+    return "" if (!defined($path) || !-e $path || !open($fh, "<", $path));
+    local $/;
+    my $content = <$fh>;
+    close($fh);
+    return defined($content) ? $content : "";
+}
+
+# FHEM has already split the arguments, so they are rejoined and parsed again:
+# both a network name and a password may contain spaces, and then they have to
+# be quoted -- set <dev> flashESP "My WLAN" "secret phrase". Whatever follows
+# the name is the password, spaces and all.
+#
+# Returns nothing when there is no name, and the name alone when there is no
+# password, so the caller can tell the two apart.
+sub NeatoLocal_SplitCredentials(@) {
+    my (@args) = @_;
+
+    my $line = join(" ", @args);
+    my @parts;
+    while ($line =~ m/\G\s*(?:"([^"]*)"|(\S+))/gc) {
+        push @parts, defined($1) ? $1 : $2;
+    }
+
+    return (undef, undef) if (!@parts);
+
+    my $ssid = shift(@parts);
+    return ($ssid, undef) if (!@parts);
+
+    return ($ssid, join(" ", @parts));
+}
+
+# The credentials block the firmware picks up on its first boot. Written to the
+# storage partition rather than into the application image: the image carries a
+# SHA-256 that the bootloader checks, so patching bytes into it would stop the
+# board from starting at all.
+#
+# Layout, matching SEED_* in the firmware: magic, the two lengths, then the
+# fields at fixed positions. Padded with 0xFF, the value erased flash already
+# has.
+sub NeatoLocal_SeedBlob($$) {
+    my ($ssid, $psk) = @_;
+
+    return undef if (!defined($ssid) || length($ssid) < 1 || length($ssid) > 32);
+    return undef if (!defined($psk) || length($psk) > 64);
+
+    my $blob = "NEATOSEED1"
+             . chr(length($ssid)) . chr(length($psk))
+             . pack("a32", $ssid)
+             . pack("a64", $psk);
+
+    return $blob . ("\xFF" x (128 - length($blob)));
+}
+
+# The offset comes from the metadata CI writes beside the image, which reads it
+# out of the partition table inside that very image. A number kept here instead
+# would be right only until somebody changes the partition scheme.
+sub NeatoLocal_SeedOffset($) {
+    my ($text) = @_;
+
+    return undef if (!defined($text));
+    my ($offset) = ($text =~ m/^seed offset:\s*(0x[0-9a-fA-F]+)/m);
+    return $offset;
+}
+
 sub NeatoLocal_FlashBlocking($) {
     my ($string) = @_;
-    my ($name, $port, $image) = split("\\|", $string, 3);
+    my ($name, $port, $image, $ssid, $psk) = split("\\|", $string, 5);
+
+    $ssid = undef if (defined($ssid) && $ssid eq "");
+    $psk = "" if (!defined($psk));
 
     my $tool = NeatoLocal_FindEsptool();
     return "$name|esptool not found. Install it with 'pip3 install esptool' or "
@@ -1536,13 +1633,43 @@ sub NeatoLocal_FlashBlocking($) {
         if ($tool eq "");
 
     # A URL is fetched first, so the image does not have to be downloaded by
-    # hand before it can be written.
+    # hand before it can be written. The metadata file beside it comes along:
+    # it names the partition the credentials block belongs in.
+    my $meta = "";
     if ($image =~ m/^https?:\/\//i) {
+        my $metaUrl = $image;
+        $metaUrl =~ s/\.bin$/.txt/;
+
         my $target = "/tmp/.neato_bridge_flash.bin";
         my $rc = system("curl -fsSL -o " . quotemeta($target) . " "
                       . quotemeta($image) . " 2>/dev/null");
         return "$name|could not download $image" if ($rc != 0);
+
+        if ($metaUrl ne $image) {
+            my $metaFile = "/tmp/.neato_bridge_flash.txt";
+            if (system("curl -fsSL -o " . quotemeta($metaFile) . " "
+                     . quotemeta($metaUrl) . " 2>/dev/null") == 0) {
+                $meta = NeatoLocal_SlurpFile($metaFile);
+            }
+        }
         $image = $target;
+    }
+    else {
+        my $metaFile = $image;
+        $metaFile =~ s/\.bin$/.txt/;
+        $meta = NeatoLocal_SlurpFile($metaFile) if ($metaFile ne $image);
+    }
+
+    # Refuse before writing rather than halfway through: a board with the image
+    # on it but no credentials needs the console after all, which is the detour
+    # this is meant to avoid.
+    my $seedOffset;
+    if (defined($ssid)) {
+        $seedOffset = NeatoLocal_SeedOffset($meta);
+        return "$name|the image does not say where the credentials block goes "
+             . "(no 'seed offset' in the metadata beside it). Flash without "
+             . "credentials and use 'set $name wifiESP' instead."
+            if (!defined($seedOffset));
     }
 
     my $bad = NeatoLocal_CheckImage($image);
@@ -1556,6 +1683,34 @@ sub NeatoLocal_FlashBlocking($) {
             . " write_flash 0x0 " . quotemeta($image) . " 2>&1";
     my $out = qx($cmd);
     my $rc  = $? >> 8;
+
+    # The credentials go into their own partition in a second pass. They cannot
+    # ride along inside the image: that carries a SHA-256 the bootloader checks,
+    # so anything written into it stops the board from starting.
+    if ($rc == 0 && defined($ssid)) {
+        my $blob = NeatoLocal_SeedBlob($ssid, $psk);
+        return "$name|the network name or password does not fit the credentials "
+             . "block" if (!defined($blob));
+
+        my $seedFile = "/tmp/.neato_bridge_seed.bin";
+        my $fh;
+        return "$name|cannot write $seedFile" if (!open($fh, ">", $seedFile));
+        binmode($fh);
+        print $fh $blob;
+        close($fh);
+
+        my $seedCmd = "$tool --chip esp32c3 --port " . quotemeta($port)
+                    . " write_flash " . quotemeta($seedOffset) . " "
+                    . quotemeta($seedFile) . " 2>&1";
+        my $seedOut = qx($seedCmd);
+        my $seedRc = $? >> 8;
+
+        # The password does not stay on disk beyond the write.
+        unlink($seedFile);
+
+        $out .= "\n" . $seedOut;
+        $rc = $seedRc if ($seedRc != 0);
+    }
 
     # keep the tail: the interesting part of an esptool failure is at the end
     $out =~ s/\s+$//;
@@ -2077,14 +2232,20 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>While test mode is on the robot ignores its own buttons and will
         not clean.</b> The module always sends "TestMode Off" on shutdown,
         delete and disable.</li>
-    <li><b>flashESP &lt;image|url&gt;</b> - writes the bridge firmware to a board
-        on the FHEM machine's USB port, using esptool. A URL is downloaded
-        first, and anything that is not a firmware image is refused before the
-        board is touched. The bridge is powered by the
-        robot, so this is for a board that is not installed yet.</li>
-    <li><b>wifiESP &lt;ssid&gt; &lt;password&gt;</b> - hands the credentials to a
-        freshly flashed board over its USB port and reports the address it
-        ends up with in the reading bridgeAddress.</li>
+    <li><b>flashESP [&lt;image|url&gt;] [&lt;ssid&gt; &lt;password&gt;]</b> -
+        writes the bridge firmware to a board on the FHEM machine's USB port,
+        using esptool. Without an image the one this project builds is fetched.
+        Anything that is not a firmware image is refused before the board is
+        touched. Given a network, the credentials are written to their own
+        partition in a second pass and taken into NVS on the first boot, so no
+        console dialogue and no software restart are needed. The bridge is
+        powered by the robot, so this is for a board that is not installed yet.
+        Quote values containing spaces:
+        <code>set &lt;dev&gt; flashESP "My WLAN" "secret phrase"</code></li>
+    <li><b>wifiESP &lt;ssid&gt; &lt;password&gt;</b> - hands the credentials to an
+        already flashed board over its USB port and reports the address it
+        ends up with in the reading bridgeAddress. For a board that is being
+        flashed anyway, flashESP does this in the same pass.</li>
     <li><b>raw &lt;command&gt;</b> - sends an arbitrary console command</li>
     <li><b>reconnect</b> - reopens the connection</li>
   </ul><br>
@@ -2109,7 +2270,7 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>timeout</b> - response timeout in seconds, default 10</li>
     <li><b>espPort</b> - the USB port the bridge board is on while it is being
         flashed, default /dev/ttyACM0</li>
-    <li><b>espImage</b> - path of the image flashESP writes when none is given</li>
+    <li><b>espImage</b> - image flashESP writes instead of the one this project publishes</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -2253,14 +2414,21 @@ sub NeatoLocal_LeaveTestMode($) {
         <b>Im Testmodus reagiert der Roboter nicht mehr auf seine Tasten und
         reinigt nicht.</b> Das Modul sendet bei Shutdown, Loeschen und
         Deaktivieren immer "TestMode Off".</li>
-    <li><b>flashESP &lt;Image|URL&gt;</b> - schreibt die Bruecken-Firmware auf
-        ein Board am USB-Port des FHEM-Rechners, per esptool. Eine URL wird
-        zuvor geladen, und was keine Firmware ist, wird abgelehnt, bevor das
-        Board angefasst wird. Die Bruecke wird vom
-        Roboter versorgt, das ist also fuer ein noch nicht eingebautes Board.</li>
-    <li><b>wifiESP &lt;SSID&gt; &lt;Passwort&gt;</b> - uebergibt einem frisch
+    <li><b>flashESP [&lt;Image|URL&gt;] [&lt;SSID&gt; &lt;Passwort&gt;]</b> -
+        schreibt die Bruecken-Firmware auf ein Board am USB-Port des
+        FHEM-Rechners, per esptool. Ohne Angabe wird das Image geholt, das
+        dieses Projekt baut. Was keine Firmware ist, wird abgelehnt, bevor das
+        Board angefasst wird. Mit einem Netz werden die Zugangsdaten in einem
+        zweiten Schreibvorgang in eine eigene Partition gelegt und beim ersten
+        Start ins NVS uebernommen -- ohne Konsolendialog und ohne
+        Software-Neustart. Die Bruecke wird vom Roboter versorgt, das ist also
+        fuer ein noch nicht eingebautes Board. Werte mit Leerzeichen gehoeren in
+        Anfuehrungszeichen:
+        <code>set &lt;dev&gt; flashESP "Mein WLAN" "lange Passphrase"</code></li>
+    <li><b>wifiESP &lt;SSID&gt; &lt;Passwort&gt;</b> - uebergibt einem bereits
         geflashten Board die Zugangsdaten ueber dessen USB-Port und meldet die
-        Adresse, unter der es erreichbar wird, im Reading bridgeAddress.</li>
+        Adresse, unter der es erreichbar wird, im Reading bridgeAddress. Wird
+        ohnehin geflasht, erledigt flashESP das in einem Zug.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein beliebiges Konsolenkommando</li>
     <li><b>reconnect</b> - baut die Verbindung neu auf</li>
   </ul><br>
@@ -2289,7 +2457,7 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>timeout</b> - Antwort-Timeout in Sekunden, Standard 10</li>
     <li><b>espPort</b> - der USB-Port, an dem das Bruecken-Board beim Flashen
         haengt, Standard /dev/ttyACM0</li>
-    <li><b>espImage</b> - Pfad des Images, das flashESP ohne Angabe schreibt</li>
+    <li><b>espImage</b> - Image, das flashESP statt des von diesem Projekt veroeffentlichten schreibt</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,

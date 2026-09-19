@@ -224,14 +224,36 @@ vor sich hat – Größe und das Magic-Byte `0xE9`. Eine abgebrochene Übertragu
 oder eine HTML-Fehlerseite statt des Images führt so zu einer Meldung statt zu
 einem halb beschriebenen Flash.
 
-`flashESP` schreibt es mit `esptool` an Offset 0. `wifiESP` übergibt die
-Zugangsdaten anschließend über denselben USB-Port an die
-Konfigurationskonsole der Firmware und meldet die Adresse, unter der die
-Brücke dann erreichbar ist, im Reading `bridgeAddress`. Enthalten Name oder
-Passwort Leerzeichen, gehören sie in Anführungszeichen:
-`set Staubsauger wifiESP "Mein WLAN" "lange Passphrase"`. Ohne Leerzeichen
-gehen sie auch ohne Anführungszeichen; enthalten sie ein Semikolon, muss es als
-`;;` geschrieben werden, weil FHEM daran Befehle trennt.
+Der übliche Weg ist ein Befehl:
+
+```
+set Staubsauger flashESP "Mein WLAN" "lange Passphrase"
+```
+
+`flashESP` holt das Image, das die CI dieses Projekts baut, schreibt es mit
+`esptool` an Offset 0 und legt die Zugangsdaten in einem zweiten Schreibvorgang
+als kleinen Block in die Storage-Partition. Beim ersten Start übernimmt die
+Firmware sie ins NVS und löscht den Block wieder.
+
+Sie können **nicht** ins Anwendungsimage geschrieben werden: das trägt eine
+SHA-256, die der Bootloader prüft, und ein hineingepatchtes Byte hindert das
+Board am Starten. Den Offset der Partition nimmt das Modul aus der Textdatei
+neben dem Image, die die CI aus der Partitionstabelle *dieses* Images erzeugt –
+eine hier eingetragene Zahl wäre nur so lange richtig, bis jemand das
+Partitionsschema ändert.
+
+Ein eigenes Image geht weiterhin vor: `set Staubsauger flashESP /pfad/zum.bin`,
+oder dauerhaft über das Attribut `espImage`. Fehlt die Textdatei daneben,
+werden keine Zugangsdaten geschrieben, und das Modul sagt das, statt ein halb
+eingerichtetes Board zu hinterlassen.
+
+`wifiESP` bleibt für den Fall, dass sich das WLAN später ändert: es übergibt
+die Zugangsdaten über den USB-Port an die Konfigurationskonsole der Firmware
+und meldet die Adresse, unter der die Brücke erreichbar ist, im Reading
+`bridgeAddress`. Enthalten Name oder Passwort Leerzeichen, gehören sie in
+Anführungszeichen. Ohne Leerzeichen gehen sie auch ohne; enthalten sie ein
+Semikolon, muss es als `;;` geschrieben werden, weil FHEM daran Befehle
+trennt.
 
 Beides läuft in einem eigenen Prozess, FHEM bleibt also bedienbar. Das Ergebnis
 steht im Reading `lastFlash`.
