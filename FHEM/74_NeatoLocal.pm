@@ -37,7 +37,7 @@ use IO::Socket::INET;
 use IO::Select;
 use Digest::MD5;
 
-my $NeatoLocal_VERSION = "0.14.1";
+my $NeatoLocal_VERSION = "0.14.2";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -2664,7 +2664,7 @@ sub NeatoLocal_LeaveTestMode($) {
   <b>Set</b>
   <ul>
     <li><b>startCleaning [house|spot|explore|persistent]</b> - starts a cleaning
-        run, an exploration run or a run on the stored map</li>
+        run, an exploration run or a run on the stored map <i>explore</i> and <i>persistent</i> are described by the robot's own help as equivalent to starting that run from the Smart App. Observed on a D6 without the cloud: the command is accepted, the robot raises alert 236 UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS and does not start. The console offers no way to create or assign map IDs, so this most likely cannot be fixed from here. <i>house</i> and <i>spot</i> are unaffected.</li>
     <li><b>stop</b> - stops the current run</li>
     <li><b>pause</b> / <b>resume</b> - pauses and resumes a run. Uses the event
         API where available, which keeps map and localization across the pause.
@@ -2860,7 +2860,7 @@ sub NeatoLocal_LeaveTestMode($) {
   <ul>
     <li><b>startCleaning [house|spot|explore|persistent]</b> - startet eine
         Reinigung, eine Erkundungsfahrt oder eine Fahrt auf der gespeicherten
-        Karte</li>
+        Karte <i>explore</i> und <i>persistent</i> beschreibt die Hilfe des Roboters selbst als Entsprechung zum Start aus der Smart App. Beobachtet an einem D6 ohne Cloud: das Kommando wird angenommen, der Roboter setzt Alarm 236 UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS und faehrt nicht los. Die Konsole kennt keinen Befehl, um Karten-IDs anzulegen oder zuzuweisen -- von hier aus ist das also vermutlich nicht zu beheben. <i>house</i> und <i>spot</i> sind davon nicht betroffen.</li>
     <li><b>stop</b> - beendet die laufende Reinigung</li>
     <li><b>pause</b> / <b>resume</b> - pausiert und setzt fort. Nutzt die
         Event-Schnittstelle, wenn verfuegbar; damit bleiben Karte und

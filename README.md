@@ -351,6 +351,19 @@ Stromausfall.
 
 ## Readings
 
+### Explore und Persistent brauchen die App
+
+`startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des
+Roboters selbst als Entsprechung zum Start aus der Smart App – bei `house` und
+`spot` tut sie das nicht. An einem D6 ohne Cloud beobachtet: das Kommando wird
+angenommen, der Roboter setzt Alarm 236 `UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS`
+und fährt nicht los.
+
+Die Konsole kennt keinen Befehl, um persistente Karten-IDs anzulegen,
+zuzuweisen oder abzufragen. Die Vermutung liegt daher nahe, dass diese IDs von
+der Cloud kamen und beide Modi ohne sie nicht starten – belegt ist das nicht,
+nur das beobachtete Verhalten. `house` und `spot` laufen normal.
+
 ### Zustand
 
 `state` kennt `cleaning`, `paused`, `suspended`, `docking`, `charging`,
