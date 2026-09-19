@@ -32,7 +32,7 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.12.3";
+my $NeatoLocal_VERSION = "0.13.0";
 
 # Where flashESP gets the image when nothing else is configured. The project's
 # CI builds it on every firmware change, and the text file beside it carries the
@@ -1091,6 +1091,20 @@ sub NeatoLocal_ParseUserSettings($$$) {
     return undef;
 }
 
+# Is the transport itself alive? DevIo keeps the handle it opened in one of
+# these and drops it again on disconnect.
+sub NeatoLocal_LinkUp($) {
+    my ($hash) = @_;
+
+    # No handle of its own; HTTP reports its failures per request.
+    return 1 if ($hash->{TRANSPORT} eq "http");
+    return 0 if ($hash->{TRANSPORT} eq "none");
+
+    return (defined($hash->{FD})
+         || defined($hash->{TCPDev})
+         || defined($hash->{USBDev})) ? 1 : 0;
+}
+
 sub NeatoLocal_UpdateState($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
@@ -1107,7 +1121,12 @@ sub NeatoLocal_UpdateState($) {
     my $state;
     # Nothing we think we know is worth anything while the robot is silent.
     if (($hash->{helper}{failCount} || 0) >= 3) {
-        $state = "unreachable";
+        # Two different faults that look identical from the outside. A bridge
+        # that cannot be reached is a network or power problem; a bridge that
+        # answers while the robot does not is usually a cable -- during setup
+        # it is simply the normal state, and calling that "unreachable" sends
+        # people looking for a fault in the bridge that is not there.
+        $state = NeatoLocal_LinkUp($hash) ? "robotSilent" : "unreachable";
     }
     elsif ($errorCode) {
         $state = "error";
@@ -2474,13 +2493,15 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>commandApi</b> - setEvent or legacy, depending on whether the event
         API could be unlocked</li>
     <li><b>state</b> - cleaning, paused, suspended, docking, charging, docked,
-        idle, error, unreachable or
+        idle, error, robotSilent, unreachable or
         disconnected. <i>suspended</i> means the robot interrupted the run by
         itself, usually to charge, and intends to resume.
-        <i>unreachable</i> means the connection is up but the
-        robot does not answer -- asleep, or a bridge that is not wired to it
-        yet. Polling then backs off up to 16x the interval instead of filling
-        the log.</li>
+        <i>robotSilent</i> means the connection to the bridge is up but the
+        robot does not answer -- asleep, or a bridge not wired to it yet, which
+        is simply what a freshly flashed board looks like.
+        <i>unreachable</i> means the connection itself is gone: the bridge is
+        off the network, or without power. In both cases polling backs off up
+        to 16x the interval instead of filling the log.</li>
     <li><b>batteryPercent</b>, <b>batteryState</b>, <b>batteryVoltage</b></li>
     <li><b>isCharging</b>, <b>isDocked</b>, <b>isCleaning</b>, <b>vacuumRPM</b></li>
     <li><b>error</b>, <b>errorCode</b> - a real error, e.g. 249
@@ -2665,12 +2686,16 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>commandApi</b> - setEvent oder legacy, je nachdem ob sich die
         Event-Schnittstelle freischalten liess</li>
     <li><b>state</b> - cleaning, paused, suspended, docking, charging, docked,
-        idle, error, unreachable oder disconnected. <i>suspended</i> heisst:
-        der Roboter hat die Reinigung selbst unterbrochen, meist wegen leerem
-        Akku, und will sie nach dem Laden fortsetzen. <i>unreachable</i> heisst: die Verbindung steht,
+        idle, error, robotSilent, unreachable oder disconnected.
+        <i>suspended</i> heisst: der Roboter hat die Reinigung selbst
+        unterbrochen, meist wegen leerem Akku, und will sie nach dem Laden
+        fortsetzen. <i>robotSilent</i> heisst: die Verbindung zur Bruecke steht,
         aber der Roboter antwortet nicht -- er schlaeft, oder die Bruecke ist
-        noch nicht mit ihm verdrahtet. Die Abfrage geht dann bis auf das
-        16-fache Intervall zurueck, statt das Log zu fluten.</li>
+        noch nicht mit ihm verdrahtet; nach dem Flashen ist genau das der
+        normale Zustand. <i>unreachable</i> heisst: die Verbindung selbst ist
+        weg, die Bruecke also nicht im Netz oder ohne Strom. In beiden Faellen
+        geht die Abfrage bis auf das 16-fache Intervall zurueck, statt das Log
+        zu fluten.</li>
     <li><b>batteryPercent</b>, <b>batteryState</b>, <b>batteryVoltage</b></li>
     <li><b>isCharging</b>, <b>isDocked</b>, <b>isCleaning</b>, <b>vacuumRPM</b></li>
     <li><b>error</b>, <b>errorCode</b> - a real error, e.g. 249

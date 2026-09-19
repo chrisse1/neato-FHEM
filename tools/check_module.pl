@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 241;
+use Test::More tests => 248;
 
 package main;
 
@@ -906,3 +906,37 @@ is($foldedIp, "192.168.1.61", "so the address still arrives as the address");
     like(ReadingsVal("wd", "lastFlash", ""), qr/bridge at/,
          "a finished run is left alone");
 }
+
+# --- a silent robot is not a missing bridge ---------------------------------
+# During setup the bridge is up and the robot is not wired to it yet. Calling
+# that "unreachable" sends people looking for a fault in the bridge.
+{
+    my ($sh, $sr) = mkdev("sil NeatoLocal 192.168.1.150:23");
+    $sh->{helper}{failCount} = 8;
+
+    $sh->{FD} = 38;                       # DevIo holds an open connection
+    NeatoLocal_UpdateState($sh);
+    is(ReadingsVal("sil", "state", ""), "robotSilent",
+       "a standing connection with a silent robot is named as such");
+
+    delete $sh->{FD};                     # and drops it when the link goes
+    NeatoLocal_UpdateState($sh);
+    is(ReadingsVal("sil", "state", ""), "unreachable",
+       "a connection that is gone is still unreachable");
+
+    # A robot that answers again clears it either way.
+    $sh->{FD} = 38;
+    $sh->{helper}{failCount} = 0;
+    readingsSingleUpdate($sh, "isDocked", 1, 1);
+    NeatoLocal_UpdateState($sh);
+    isnt(ReadingsVal("sil", "state", ""), "robotSilent",
+         "an answer ends it");
+}
+
+is(NeatoLocal_LinkUp({ TRANSPORT => "none" }), 0,
+   "a device without an address has no link");
+is(NeatoLocal_LinkUp({ TRANSPORT => "http" }), 1,
+   "HTTP reports its failures per request, so it counts as up");
+is(NeatoLocal_LinkUp({ TRANSPORT => "tcp" }), 0, "no handle, no link");
+is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
+   "a serial handle counts too");

@@ -328,16 +328,21 @@ Stromausfall.
 ### Zustand
 
 `state` kennt `cleaning`, `paused`, `suspended`, `docking`, `charging`,
-`docked`, `idle`, `error`, `unreachable` und `disconnected`.
+`docked`, `idle`, `error`, `robotSilent`, `unreachable` und `disconnected`.
 
 * **`suspended`** – der Roboter hat die Reinigung selbst unterbrochen, in aller
   Regel wegen leerem Akku, und will sie nach dem Laden fortsetzen. Steht dabei
   `isDocked 0`, hat er die Basis nicht mehr erreicht.
-* **`unreachable`** – die Verbindung steht, aber der Roboter antwortet nicht:
-  er schläft, oder die Brücke ist nicht mit ihm verdrahtet. Die Abfrage geht
-  dann schrittweise bis auf das 16-fache Intervall zurück, höchstens eine
-  Stunde, statt Zeitüberschreitungen ins Log zu schreiben. Die erste Antwort
-  setzt alles zurück.
+* **`robotSilent`** – die Verbindung zur Brücke steht, aber der Roboter
+  antwortet nicht: er schläft, oder die Brücke ist noch nicht mit ihm
+  verdrahtet. Nach dem Flashen ist das der normale Zustand und kein Hinweis auf
+  ein Problem mit der Brücke.
+* **`unreachable`** – die Verbindung selbst ist weg: die Brücke ist nicht im
+  Netz oder ohne Strom.
+
+In beiden Fällen geht die Abfrage schrittweise bis auf das 16-fache Intervall
+zurück, höchstens eine Stunde, statt Zeitüberschreitungen ins Log zu schreiben.
+Die erste Antwort setzt alles zurück.
 
 `uiState` und `robotState` geben den Zustand unverändert so wieder, wie der
 Roboter ihn meldet.
@@ -491,9 +496,13 @@ auf 2 Sekunden, `connectTimeout` senkt das weiter. `apptime` in der
 FHEM-Kommandozeile weist es nach: erscheint dort `NeatoLocal_Ready` oder
 `DevIo_OpenDev` mit langer Laufzeit, ist es der Verbindungsaufbau.
 
-**Der Roboter antwortet nicht.** `state` steht auf `unreachable`: Roboter
+**Der Roboter antwortet nicht.** `state` steht auf `robotSilent`: Roboter
 wecken, Verdrahtung der Brücke prüfen (`http://neato.local/` zeigt die
 Byte-Zähler in beide Richtungen), oder `--diagnose` am USB-Port laufen lassen.
+
+**Die Brücke ist weg.** `state` steht auf `unreachable`: die Verbindung kommt
+nicht zustande. Stromversorgung und WLAN prüfen, nicht die Verdrahtung zum
+Roboter.
 
 **Ein Kommando bleibt wirkungslos.** `get <dev> help Clean` zeigt, was die
 jeweilige Firmware versteht; über die `cmd*`-Attribute lässt sich jedes
