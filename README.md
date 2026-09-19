@@ -351,6 +351,34 @@ Stromausfall.
 
 ## Readings
 
+### Gefahrene Spur aufzeichnen
+
+Der Roboter führt kein eigenes Protokoll und gibt seine Wohnungskarte über die
+Konsole nicht heraus. Was sich rekonstruieren lässt, ist die **gefahrene
+Spur**: während eines Laufs fragt das Modul alle `trackInterval` Sekunden
+`GetRobotPos Raw` ab und schreibt jede Position als eine JSON-Zeile weg.
+OpenNeato löst es genauso – dort entsteht die „Cleaning History" ebenfalls
+durch Mitschreiben, nicht durch Abholen.
+
+Die Aufzeichnung startet und endet mit dem Lauf, auch wenn er am Roboter selbst
+oder per Zeitplan begonnen wurde. Eine Sitzung liegt als
+`<trackDir>/<Gerät>-<Zeitstempel>.jsonl`:
+
+```json
+{"device":"Staubsauger","started":"2026-09-19_15-04-05","module":"0.16.0","unit":"m"}
+{"t":1281.84,"x":0.000,"y":0.000,"th":0.0}
+{"t":1284.91,"x":0.412,"y":0.003,"th":1.2}
+{"summary":{"points":812,"distance":41.2,"rotation":3600,"seconds":2431}}
+```
+
+Koordinaten in Metern, `th` in Grad. Die Zusammenfassung landet zusätzlich in
+den Readings `trackPoints`, `trackDistance` und `trackDuration`, der Dateiname
+in `trackFile` – für Kacheln in FTUI3 reichen die Readings, die Karte liest die
+Datei.
+
+Standardverzeichnis ist `./www/neato`, also `/opt/fhem/www/neato`. Abschalten
+mit `attr <dev> trackRuns 0`.
+
 ### Explore und Persistent brauchen die App
 
 `startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des

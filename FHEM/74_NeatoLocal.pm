@@ -36,8 +36,9 @@ use Time::HiRes qw(gettimeofday);
 use IO::Socket::INET;
 use IO::Select;
 use Digest::MD5;
+use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.15.0";
+my $NeatoLocal_VERSION = "0.16.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -192,7 +193,7 @@ sub NeatoLocal_Initialize($) {
 
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
                       . "interval timeout connectTimeout espPort espImage "
-                      . "espAppImage "
+                      . "espAppImage trackRuns:0,1 trackDir trackInterval "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1120,6 +1121,158 @@ sub NeatoLocal_LinkUp($) {
          || defined($hash->{USBDev})) ? 1 : 0;
 }
 
+# ---------------------------------------------------------------- track ----
+# What the robot drove, written away while it drives it. The robot keeps no
+# record of its own -- OpenNeato solves this the same way, by sampling the pose
+# during a run and storing the result. There is no map to fetch; the track is
+# the map.
+#
+# One line per sample, JSON, so anything can read it without a parser for a
+# format invented here.
+
+# "Robot Raw pose: X=1.234, Y=-0.567, Theta=90.000, Time=1281.837266"
+# The coordinates are metres -- three decimals, and OpenNeato reports the same
+# numbers as metres travelled.
+sub NeatoLocal_ParsePose($) {
+    my ($text) = @_;
+
+    return undef if (!defined($text));
+    my ($x, $y, $theta, $time) = ($text =~
+        m/X=(-?[\d.]+),\s*Y=(-?[\d.]+),\s*Theta=(-?[\d.]+),\s*Time=(-?[\d.]+)/);
+
+    return undef if (!defined($x));
+    return ($x + 0, $y + 0, $theta + 0, $time + 0);
+}
+
+sub NeatoLocal_TrackStart($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    return undef if ($hash->{helper}{track});
+
+    my $dir = AttrVal($name, "trackDir", "./www/neato");
+    if (!-d $dir) {
+        eval { make_path($dir) };
+        if (!-d $dir) {
+            Log3 $name, 1, "NeatoLocal ($name) - cannot create $dir, not "
+                         . "recording the track";
+            return undef;
+        }
+    }
+
+    my @t = localtime();
+    my $stamp = sprintf("%04d-%02d-%02d_%02d-%02d-%02d",
+                        $t[5] + 1900, $t[4] + 1, $t[3], $t[2], $t[1], $t[0]);
+    my $file = "$dir/$name-$stamp.jsonl";
+
+    my $fh;
+    if (!open($fh, ">", $file)) {
+        Log3 $name, 1, "NeatoLocal ($name) - cannot write $file: $!";
+        return undef;
+    }
+    my $old = select($fh); $| = 1; select($old);
+
+    print $fh "{\"device\":\"$name\",\"started\":\"$stamp\","
+            . "\"module\":\"$NeatoLocal_VERSION\",\"unit\":\"m\"}\n";
+
+    $hash->{helper}{track} = {
+        fh       => $fh,
+        file     => $file,
+        points   => 0,
+        distance => 0,
+        rotation => 0,
+        since    => time(),
+    };
+
+    Log3 $name, 3, "NeatoLocal ($name) - recording the track to $file";
+    readingsSingleUpdate($hash, "trackFile", $file, 1);
+
+    NeatoLocal_TrackTimer($hash);
+    return undef;
+}
+
+sub NeatoLocal_TrackTimer($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    RemoveInternalTimer($hash, "NeatoLocal_TrackTimer");
+    my $track = $hash->{helper}{track};
+    return undef if (!$track);
+
+    # The console is single file. A sample that queues behind a status request
+    # would only push the queue along without being any fresher for it.
+    NeatoLocal_Enqueue($hash, "GetRobotPos Raw", \&NeatoLocal_TrackSample)
+        if (!@{$hash->{helper}{queue}} && !defined($hash->{helper}{pending}));
+
+    my $every = AttrVal($name, "trackInterval", 3);
+    $every = 1 if ($every < 1);
+    InternalTimer(gettimeofday() + $every, "NeatoLocal_TrackTimer", $hash);
+
+    return undef;
+}
+
+sub NeatoLocal_TrackSample($$$) {
+    my ($hash, $entry, $body) = @_;
+    my $name = $hash->{NAME};
+
+    my $track = $hash->{helper}{track};
+    return undef if (!$track);
+
+    my ($x, $y, $theta, $time) = NeatoLocal_ParsePose($body);
+    return undef if (!defined($x));
+
+    if (defined($track->{lastX})) {
+        my $dx = $x - $track->{lastX};
+        my $dy = $y - $track->{lastY};
+        $track->{distance} += sqrt($dx * $dx + $dy * $dy);
+
+        # Shortest way round, so a pass through 0/360 does not count as a turn.
+        my $dt = $theta - $track->{lastTheta};
+        $dt -= 360 while ($dt > 180);
+        $dt += 360 while ($dt < -180);
+        $track->{rotation} += abs($dt);
+    }
+    $track->{lastX} = $x;
+    $track->{lastY} = $y;
+    $track->{lastTheta} = $theta;
+
+    my $fh = $track->{fh};
+    print $fh sprintf("{\"t\":%.2f,\"x\":%.3f,\"y\":%.3f,\"th\":%.1f}\n",
+                      $time, $x, $y, $theta);
+    $track->{points}++;
+
+    return undef;
+}
+
+sub NeatoLocal_TrackStop($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    RemoveInternalTimer($hash, "NeatoLocal_TrackTimer");
+    my $track = delete $hash->{helper}{track};
+    return undef if (!$track);
+
+    my $seconds = time() - $track->{since};
+    my $fh = $track->{fh};
+
+    print $fh sprintf("{\"summary\":{\"points\":%d,\"distance\":%.1f,"
+                    . "\"rotation\":%.0f,\"seconds\":%d}}\n",
+                      $track->{points}, $track->{distance},
+                      $track->{rotation}, $seconds);
+    close($fh);
+
+    Log3 $name, 3, "NeatoLocal ($name) - track finished: $track->{points} "
+                 . "points, " . sprintf("%.1f", $track->{distance}) . " m";
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "trackPoints", $track->{points});
+    readingsBulkUpdate($hash, "trackDistance", sprintf("%.1f", $track->{distance}));
+    readingsBulkUpdate($hash, "trackDuration", $seconds);
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
 sub NeatoLocal_UpdateState($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
@@ -1179,6 +1332,16 @@ sub NeatoLocal_UpdateState($) {
 
     readingsSingleUpdate($hash, "state", $state, 1)
         if (ReadingsVal($name, "state", "") ne $state);
+
+    # Recording follows the run rather than a command: a cleaning started at the
+    # robot's own button, or by its schedule, is the one nobody is watching and
+    # the one worth having a track of.
+    if (AttrVal($name, "trackRuns", 1) && $hash->{TRANSPORT} ne "none") {
+        my $running = ($state =~ m/^(cleaning|paused|suspended)$/) ? 1 : 0;
+
+        NeatoLocal_TrackStart($hash) if ($running && !$hash->{helper}{track});
+        NeatoLocal_TrackStop($hash)  if (!$running && $hash->{helper}{track});
+    }
 
     return undef;
 }
@@ -2769,6 +2932,9 @@ sub NeatoLocal_LeaveTestMode($) {
         flashed, default /dev/ttyACM0</li>
     <li><b>espImage</b> - image flashESP writes instead of the one this project publishes</li>
     <li><b>espAppImage</b> - application otaESP sends instead of the published one</li>
+    <li><b>trackRuns</b> - record the driven track while the robot cleans (default 1)</li>
+    <li><b>trackDir</b> - where the session files go, default ./www/neato</li>
+    <li><b>trackInterval</b> - seconds between pose samples, default 3</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -2971,6 +3137,9 @@ sub NeatoLocal_LeaveTestMode($) {
         haengt, Standard /dev/ttyACM0</li>
     <li><b>espImage</b> - Image, das flashESP statt des von diesem Projekt veroeffentlichten schreibt</li>
     <li><b>espAppImage</b> - Anwendung, die otaESP statt der veroeffentlichten sendet</li>
+    <li><b>trackRuns</b> - zeichnet die gefahrene Spur waehrend der Reinigung auf (Standard 1)</li>
+    <li><b>trackDir</b> - wohin die Sitzungsdateien gehen, Standard ./www/neato</li>
+    <li><b>trackInterval</b> - Sekunden zwischen zwei Positionsabfragen, Standard 3</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,

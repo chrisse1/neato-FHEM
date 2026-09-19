@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 260;
+use Test::More tests => 279;
 
 package main;
 
@@ -994,4 +994,62 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
        "force gets through");
     my @sent = (@WRITTEN, map { $_->{cmd} } @{$eh->{helper}{queue}});
     ok(scalar(grep { /Clean Explore/ } @sent) > 0, "and sends Clean Explore");
+}
+
+# --- recording what the robot drove ----------------------------------------
+# The robot keeps no record of its own, so the track is written while it runs.
+# The pose line is the contract with the robot; it is pinned down verbatim.
+{
+    my ($x, $y, $th, $t) = NeatoLocal_ParsePose(
+        "Robot Raw pose: X=1.234, Y=-0.567, Theta=90.000, Time=1281.837266");
+    is($x, 1.234, "the pose gives x");
+    is($y, -0.567, "and a negative y survives");
+    is($th, 90, "and the heading");
+    is($t, 1281.837266, "and the robot's own clock");
+
+    my @docked = NeatoLocal_ParsePose(
+        "Robot Raw pose: X=0.000, Y=0.000, Theta=0.000, Time=1.0");
+    is(scalar(@docked), 4, "a robot on its dock still parses");
+    is($docked[0], 0, "and reads as the origin, not as a failure");
+    is(scalar(NeatoLocal_ParsePose("Unknown Command")), undef,
+       "and something else is refused");
+    is(scalar(NeatoLocal_ParsePose(undef)), undef, "as is nothing at all");
+}
+
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my ($th2, $tr) = mkdev("trk NeatoLocal 192.168.1.42:23");
+    $attr{"trk"}{trackDir} = $dir;
+
+    NeatoLocal_TrackStart($th2);
+    ok($th2->{helper}{track}, "a run opens a session");
+    my $file = $th2->{helper}{track}{file};
+    ok(-e $file, "and a file to put it in");
+
+    # A square: four metres out, four back. Distance is the path, not the
+    # displacement -- a robot that returns to its dock has still driven.
+    foreach my $p ([0,0,0], [2,0,90], [2,2,180], [0,2,270], [0,0,0]) {
+        NeatoLocal_TrackSample($th2, {},
+            sprintf("Robot Raw pose: X=%.3f, Y=%.3f, Theta=%.3f, Time=%d",
+                    $p->[0], $p->[1], $p->[2], 100));
+    }
+    is($th2->{helper}{track}{points}, 5, "every sample is kept");
+    is(sprintf("%.1f", $th2->{helper}{track}{distance}), "8.0",
+       "the driven path is measured, not the distance from the start");
+
+    NeatoLocal_TrackStop($th2);
+    is($th2->{helper}{track}, undef, "the end of the run closes the session");
+    is(ReadingsVal("trk", "trackPoints", ""), 5, "the count lands in a reading");
+    is(ReadingsVal("trk", "trackDistance", ""), "8.0", "and the distance");
+
+    open(my $rd, "<", $file);
+    my @lines = <$rd>;
+    close($rd);
+    like($lines[0], qr/"device":"trk"/, "the file names its device");
+    like($lines[0], qr/"unit":"m"/, "and its unit, so nobody has to guess");
+    like($lines[1], qr/^\{"t":100\.00,"x":0\.000,"y":0\.000,"th":0\.0\}$/,
+         "a sample is one JSON object per line");
+    like($lines[-1], qr/"summary":.*"points":5/, "and the summary closes it");
 }
