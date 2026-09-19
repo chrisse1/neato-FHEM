@@ -60,8 +60,13 @@ jobs:
           # Where a board gets its network handed to it at flash time. Read out
           # of the partition table that ships inside this very image, so the
           # two cannot drift apart.
+          # Logged whatever happens: the layout decides where the credentials
+          # block may be written, and it is not worth guessing at.
+          python3 tools/partition_offset.py \
+            build/neato_bridge.ino.partitions.bin --list
           seed=$(python3 tools/partition_offset.py \
-                   build/neato_bridge.ino.partitions.bin spiffs)
+                   build/neato_bridge.ino.partitions.bin \
+                   spiffs,storage,littlefs,ffat)
 
           {
             echo "neato_bridge $version"

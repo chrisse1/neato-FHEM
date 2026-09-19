@@ -29,21 +29,50 @@ def find(table, label):
     return None
 
 
+def entries(table):
+    """Every partition in the table, as (label, type, subtype, offset, size)."""
+    out = []
+    for pos in range(0, len(table), ENTRY_SIZE):
+        entry = table[pos:pos + ENTRY_SIZE]
+        if len(entry) < ENTRY_SIZE:
+            break
+        magic, ptype, subtype, offset, size = struct.unpack("<HBBII", entry[:12])
+        if magic != MAGIC:
+            break
+        label = entry[12:28].split(b"\0")[0].decode("utf-8", "replace")
+        out.append((label, ptype, subtype, offset, size))
+    return out
+
+
 def main(argv):
-    if len(argv) != 3:
-        sys.stderr.write("usage: %s <partitions.bin> <label>\n" % argv[0])
+    if len(argv) < 3:
+        sys.stderr.write("usage: %s <partitions.bin> <label>[,<label>...]\n"
+                         % argv[0])
         return 2
 
     with open(argv[1], "rb") as handle:
         table = handle.read()
 
-    found = find(table, argv[2])
-    if found is None:
-        sys.stderr.write("no partition named '%s' in %s\n" % (argv[2], argv[1]))
-        return 1
+    if argv[2] == "--list":
+        for label, ptype, subtype, offset, size in entries(table):
+            print("%-16s type %d subtype 0x%02x at 0x%x, %d bytes"
+                  % (label, ptype, subtype, offset, size))
+        return 0
 
-    print("0x%x" % found[0])
-    return 0
+    # Several names are accepted because the stock schemes do not agree on one:
+    # the storage partition is spiffs here, littlefs or storage there. Guessing
+    # a single name is how this failed the first time round.
+    for label in argv[2].split(","):
+        found = find(table, label.strip())
+        if found is not None:
+            print("0x%x" % found[0])
+            return 0
+
+    sys.stderr.write("none of '%s' in %s. The table holds:\n" % (argv[2], argv[1]))
+    for label, ptype, subtype, offset, size in entries(table):
+        sys.stderr.write("  %-16s type %d subtype 0x%02x at 0x%x, %d bytes\n"
+                         % (label, ptype, subtype, offset, size))
+    return 1
 
 
 if __name__ == "__main__":

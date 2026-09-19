@@ -95,7 +95,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.13.0";
+static const char *VERSION = "0.13.1";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -171,9 +171,24 @@ static bool isPlaceholder(const String &ssid) {
 static bool seedUsed = false;      // for the boot log: where the network came from
 
 #if HAVE_CONFIG_STORE
+// The stock partition schemes do not agree on a name for the storage partition,
+// so the candidates are listed rather than guessed at -- the same list the
+// flashing side uses to find the offset.
+static const char *seedLabels[] = { "spiffs", "storage", "littlefs", "ffat" };
+
+static const esp_partition_t *seedPartition() {
+  for (size_t i = 0; i < sizeof(seedLabels) / sizeof(seedLabels[0]); i++) {
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, seedLabels[i]);
+    if (part != NULL) {
+      return part;
+    }
+  }
+  return NULL;
+}
+
 static bool configSeedTake(String &ssid, String &psk) {
-  const esp_partition_t *part = esp_partition_find_first(
-      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+  const esp_partition_t *part = seedPartition();
   if (part == NULL) {
     return false;
   }

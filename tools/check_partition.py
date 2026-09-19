@@ -50,6 +50,22 @@ def main():
     check(partition_offset.find(padded, "nosuch") is None,
           "and does not turn into a match either")
 
+    # The label list exists because the schemes disagree; both spellings have
+    # to resolve to the same partition.
+    littlefs = (entry("nvs", 1, 2, 0x9000, 0x5000)
+                + entry("app0", 0, 0x10, 0x10000, 0x1e0000)
+                + entry("littlefs", 1, 0x83, 0x3d0000, 0x20000))
+    check(partition_offset.find(littlefs, "spiffs") is None,
+          "a scheme without spiffs does not pretend to have one")
+    check(partition_offset.find(littlefs, "littlefs")[0] == 0x3d0000,
+          "and is found under the name it does use")
+
+    # Every partition is listed, which is what makes a wrong guess visible
+    # instead of merely fatal.
+    listed = [row[0] for row in partition_offset.entries(table)]
+    check(listed == ["nvs", "otadata", "app0", "app1", "spiffs"],
+          "the whole table can be listed, in order")
+
     # A truncated download must not be read as a valid table.
     check(partition_offset.find(table[:20], "nvs") is None,
           "a truncated table yields nothing")
