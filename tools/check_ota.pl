@@ -9,7 +9,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 14;
+use Test::More tests => 20;
 use File::Temp qw(tempdir);
 
 my $dir = tempdir(CLEANUP => 1);
@@ -77,7 +77,7 @@ sub run_ota {
     die "the simulator did not report its port" if (!defined($port));
     chomp($port);
 
-    my $result = NeatoLocal_OtaWork("dev|127.0.0.1|$port|$image");
+    my $result = NeatoLocal_OtaWork("dev|127.0.0.1|$port|1|$image");
 
     close($sim);
     return $result;
@@ -122,9 +122,21 @@ like($result, qr/did not accept the image/, "a rejected image is a failure");
 like($result, qr/bad magic byte/, "with the reason the bridge gave");
 
 # --- and the checks before anything is sent ------------------------------
-$result = NeatoLocal_OtaWork("dev|127.0.0.1|3232|$dir/nothing-here.bin");
+$result = NeatoLocal_OtaWork("dev|127.0.0.1|3232|1|$dir/nothing-here.bin");
 like($result, qr/image not readable/, "a missing image is refused up front");
 
 open(my $small, ">", "$dir/small.bin"); print $small "x"; close($small);
-$result = NeatoLocal_OtaWork("dev|127.0.0.1|3232|$dir/small.bin");
+$result = NeatoLocal_OtaWork("dev|127.0.0.1|3232|1|$dir/small.bin");
 like($result, qr/too small/, "and so is something that is not a firmware");
+
+# --- an update that would strand the bridge --------------------------------
+# Before 0.4.0 the network lived inside the firmware image. Replacing that image
+# takes the network with it -- on a bridge built into a robot, where nobody can
+# hold a cable to it.
+ok(NeatoLocal_OtaWouldStrand("0.3.0"), "0.3.0 keeps its network in the image");
+ok(NeatoLocal_OtaWouldStrand("0.1.0"), "so does anything older");
+ok(!NeatoLocal_OtaWouldStrand("0.4.0"), "0.4.0 was the first with flash storage");
+ok(!NeatoLocal_OtaWouldStrand("0.14.0"), "and everything after it is safe");
+ok(!NeatoLocal_OtaWouldStrand("1.0.0"), "a later major version too");
+ok(!NeatoLocal_OtaWouldStrand(undef),
+   "a version that cannot be read does not block the update");

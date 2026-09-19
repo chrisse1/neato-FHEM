@@ -35,7 +35,7 @@ use IO::Socket::INET;
 use IO::Select;
 use Digest::MD5;
 
-my $NeatoLocal_VERSION = "0.14.0";
+my $NeatoLocal_VERSION = "0.14.1";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -1378,7 +1378,9 @@ sub NeatoLocal_Set($@) {
 
         # An address may be given for a bridge that has moved; otherwise the one
         # the device already talks to is the right one.
-        my @rest = @args;
+        my @rest = grep { lc($_) ne "force" } @args;
+        my $force = (grep { lc($_) eq "force" } @args) ? 1 : 0;
+
         my $ip;
         $ip = shift(@rest) if (defined($rest[0])
                             && $rest[0] =~ m/^\d+\.\d+\.\d+\.\d+$/);
@@ -1397,7 +1399,7 @@ sub NeatoLocal_Set($@) {
                      . "over the air from $image";
 
         BlockingCall("NeatoLocal_OtaBlocking",
-                     "$name|$ip|$NeatoLocal_otaPort|$image",
+                     "$name|$ip|$NeatoLocal_otaPort|$force|$image",
                      "NeatoLocal_OtaDone", 300,
                      "NeatoLocal_FlashAborted", $hash);
         InternalTimer(gettimeofday() + 330, "NeatoLocal_FlashWatch", $hash);
@@ -1823,6 +1825,33 @@ sub NeatoLocal_BridgeIp($) {
     return $ip;
 }
 
+# Which version the bridge is running, read off its status page. Only used to
+# refuse an update that would strand it, so a page that cannot be read is not an
+# error -- it just means the question stays open.
+sub NeatoLocal_BridgeVersion($) {
+    my ($ip) = @_;
+
+    my $page = qx(curl -fsS --max-time 5 http://$ip/ 2>/dev/null);
+    return undef if (!defined($page) || $page eq "");
+
+    my ($version) = ($page =~ m/neato_bridge\s+(\d+\.\d+\.\d+)/);
+    return $version;
+}
+
+# Before 0.4.0 the credentials were compiled into the binary: no NVS, no setup
+# access point. An update replaces that binary, and with it the only copy of the
+# network -- on a bridge glued inside a robot, where nobody can hold a cable to
+# it. Worth stopping for, even though the way back exists.
+sub NeatoLocal_OtaWouldStrand($) {
+    my ($version) = @_;
+
+    return 0 if (!defined($version));
+    my ($major, $minor, $patch) = split(/\./, $version);
+    return 0 if (!defined($minor));
+
+    return ($major == 0 && $minor < 4) ? 1 : 0;
+}
+
 # Push a firmware image to the bridge over the air. Every version of the bridge
 # has carried ArduinoOTA, including the ones installed in a robot before FHEM
 # could flash anything -- and that is the point: a bridge glued inside a robot
@@ -1843,7 +1872,18 @@ sub NeatoLocal_BridgeIp($) {
 # Arduino core, which a FHEM machine has no reason to have installed.
 sub NeatoLocal_OtaWork($) {
     my ($string) = @_;
-    my ($name, $ip, $otaPort, $image) = split("\\|", $string, 4);
+    my ($name, $ip, $otaPort, $force, $image) = split("\\|", $string, 5);
+
+    my $running = NeatoLocal_BridgeVersion($ip);
+    if (!$force && NeatoLocal_OtaWouldStrand($running)) {
+        return "$name|the bridge runs $running, which keeps the network in its "
+             . "firmware image rather than in flash -- this update would replace "
+             . "it and leave the bridge without credentials. It then opens the "
+             . "access point 'neato-setup', where the network can be entered at "
+             . "http://192.168.4.1/ from a phone. No cable needed, but somebody "
+             . "has to stand next to the robot. Proceed with: "
+             . "set $name otaESP force";
+    }
 
     if ($image =~ m/^https?:\/\//i) {
         my $target = "/tmp/.neato_bridge_ota.bin";
@@ -2671,7 +2711,11 @@ sub NeatoLocal_LeaveTestMode($) {
         update is written into an app partition. The address is taken from the
         device unless one is given. Every version of the bridge supports this,
         so a board flashed long before this command existed can still be
-        updated.</li>
+        updated. Firmware before 0.4.0 is the exception: it holds the network
+        inside its image, so an update takes the credentials with it and the
+        bridge comes up as the access point 'neato-setup', to be given a network
+        again at http://192.168.4.1/. Such an update is refused until
+        <code>set &lt;dev&gt; otaESP force</code>.</li>
     <li><b>raw &lt;command&gt;</b> - sends an arbitrary console command</li>
     <li><b>reconnect</b> - reopens the connection</li>
   </ul><br>
@@ -2864,7 +2908,12 @@ sub NeatoLocal_LeaveTestMode($) {
         Projekt veroeffentlicht -- die ohne Bootloader und Partitionstabelle,
         denn ein Update landet in einer App-Partition. Die Adresse nimmt der
         Befehl vom Geraet, wenn keine angegeben ist. Jede Version der Bruecke
-        kann das, ein lange vorher geflashtes Board also auch.</li>
+        kann das, ein lange vorher geflashtes Board also auch. Ausnahme ist
+        Firmware vor 0.4.0: sie haelt das Netz im Image, ein Update nimmt die
+        Zugangsdaten also mit, und die Bruecke kommt als Access Point
+        'neato-setup' hoch, wo sie unter http://192.168.4.1/ ein neues Netz
+        bekommt. Ein solches Update wird abgelehnt, bis man
+        <code>set &lt;dev&gt; otaESP force</code> sagt.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein beliebiges Konsolenkommando</li>
     <li><b>reconnect</b> - baut die Verbindung neu auf</li>
   </ul><br>

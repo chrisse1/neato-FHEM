@@ -278,7 +278,17 @@ ArduinoOTA-Protokoll auf die Brücke. Die Adresse nimmt der Befehl vom Gerät;
 eine abweichende lässt sich voranstellen: `set Staubsauger otaESP 192.168.1.150`.
 
 Das funktioniert auch mit Brücken, die lange vor diesem Befehl geflasht wurden:
-OTA war von der ersten Version an im Sketch. Das Protokoll ist in reinem Perl
+OTA war von der ersten Version an im Sketch.
+
+**Eine Ausnahme, und sie ist wichtig:** Firmware **vor 0.4.0** hielt SSID und
+Passwort als einkompilierte Konstanten *im Image*. Ein Update ersetzt dieses
+Image – und damit die einzige Kopie der Zugangsdaten. Die Brücke kommt dann
+ohne Netz hoch und öffnet den Access Point `neato-setup`; eingetragen werden
+sie unter **http://192.168.4.1/** vom Handy aus. Kein Kabel nötig, aber jemand
+muss neben dem Roboter stehen. `otaESP` liest die laufende Version von der
+Statusseite und **verweigert** ein solches Update, bis man
+`set <dev> otaESP force` sagt. Ab 0.4.0 liegen die Zugangsdaten im Flash und
+überleben jedes Update. Das Protokoll ist in reinem Perl
 im Modul umgesetzt, `espota.py` aus dem Arduino-Core braucht es also nicht.
 `tools/check_ota.pl` fährt den Ablauf gegen einen Stellvertreter der Brücke und
 vergleicht das angekommene Image Byte für Byte.
