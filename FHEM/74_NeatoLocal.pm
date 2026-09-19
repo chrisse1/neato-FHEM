@@ -37,7 +37,7 @@ use IO::Socket::INET;
 use IO::Select;
 use Digest::MD5;
 
-my $NeatoLocal_VERSION = "0.14.3";
+my $NeatoLocal_VERSION = "0.15.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -1428,8 +1428,25 @@ sub NeatoLocal_Set($@) {
 
     if ($cmd eq "startCleaning") {
         my $mode = defined($args[0]) ? lc($args[0]) : "house";
+        my $force = (defined($args[1]) && lc($args[1]) eq "force") ? 1 : 0;
+
         return "usage: set $name startCleaning [house|spot|explore|persistent]"
             if ($mode !~ m/^(house|spot|explore|persistent)$/);
+
+        # Both of these are described by the robot's own help as equivalent to
+        # starting that run from the Smart App, and the app is what the shutdown
+        # took away. Observed on a D6: the command is accepted, the robot raises
+        # UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS, does not move -- and afterwards
+        # accepts every further cleaning command without acting on it, until it
+        # is switched off and on again. Refusing that is worth more than offering
+        # a mode that costs the robot's next run.
+        return "'$mode' asks the robot for a run that the Smart App used to "
+             . "start, and it then waits for map IDs that nothing delivers any "
+             . "more. It does not clean, and it stops reacting to further "
+             . "cleaning commands until it is switched off and on again. Use "
+             . "'house' or 'spot'. To try it anyway: "
+             . "set $name startCleaning $mode force"
+            if (($mode eq "explore" || $mode eq "persistent") && !$force);
 
         my ($serialCmd, $err) = NeatoLocal_MappedCmd($hash,
             ($mode eq "house") ? "startCleaning" : $mode);
@@ -2672,7 +2689,7 @@ sub NeatoLocal_LeaveTestMode($) {
   <b>Set</b>
   <ul>
     <li><b>startCleaning [house|spot|explore|persistent]</b> - starts a cleaning
-        run, an exploration run or a run on the stored map <i>explore</i> and <i>persistent</i> are described by the robot's own help as equivalent to starting that run from the Smart App. Observed on a D6 without the cloud: the command is accepted, the robot raises alert 236 UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS and does not start. The console offers no way to create or assign map IDs, so this most likely cannot be fixed from here. <i>house</i> and <i>spot</i> are unaffected.</li>
+        run, an exploration run or a run on the stored map <i>explore</i> and <i>persistent</i> are described by the robot's own help as equivalent to starting that run from the Smart App. Observed on a D6 without the cloud: the command is accepted, the robot raises alert 236 UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS, does not start, and afterwards accepts further cleaning commands without acting on them until it is switched off and on again. Both are therefore refused unless <code>force</code> is appended. <i>house</i> and <i>spot</i> are unaffected.</li>
     <li><b>stop</b> - stops the current run</li>
     <li><b>pause</b> / <b>resume</b> - pauses and resumes a run. Uses the event
         API where available, which keeps map and localization across the pause.
@@ -2868,7 +2885,7 @@ sub NeatoLocal_LeaveTestMode($) {
   <ul>
     <li><b>startCleaning [house|spot|explore|persistent]</b> - startet eine
         Reinigung, eine Erkundungsfahrt oder eine Fahrt auf der gespeicherten
-        Karte <i>explore</i> und <i>persistent</i> beschreibt die Hilfe des Roboters selbst als Entsprechung zum Start aus der Smart App. Beobachtet an einem D6 ohne Cloud: das Kommando wird angenommen, der Roboter setzt Alarm 236 UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS und faehrt nicht los. Die Konsole kennt keinen Befehl, um Karten-IDs anzulegen oder zuzuweisen -- von hier aus ist das also vermutlich nicht zu beheben. <i>house</i> und <i>spot</i> sind davon nicht betroffen.</li>
+        Karte <i>explore</i> und <i>persistent</i> beschreibt die Hilfe des Roboters selbst als Entsprechung zum Start aus der Smart App. Beobachtet an einem D6 ohne Cloud: das Kommando wird angenommen, der Roboter setzt Alarm 236 UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS, faehrt nicht los und nimmt danach weitere Reinigungsbefehle an, ohne etwas zu tun -- bis er aus- und wieder eingeschaltet wird. Beide werden deshalb abgelehnt, solange nicht <code>force</code> angehaengt wird. <i>house</i> und <i>spot</i> sind davon nicht betroffen.</li>
     <li><b>stop</b> - beendet die laufende Reinigung</li>
     <li><b>pause</b> / <b>resume</b> - pausiert und setzt fort. Nutzt die
         Event-Schnittstelle, wenn verfuegbar; damit bleiben Karte und

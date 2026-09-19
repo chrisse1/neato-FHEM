@@ -359,10 +359,21 @@ Roboters selbst als Entsprechung zum Start aus der Smart App – bei `house` und
 angenommen, der Roboter setzt Alarm 236 `UI_ALERT_ACQUIRING_PERSISTENT_MAP_IDS`
 und fährt nicht los.
 
+**Schlimmer noch:** Danach nimmt der Roboter weitere Reinigungsbefehle an, ohne
+etwas zu tun. Auch `startCleaning house` läuft dann ins Leere, bis der Roboter
+**aus- und wieder eingeschaltet** wird. Ein Explore-Versuch kostet also nicht
+nur sich selbst, sondern den nächsten Lauf.
+
+Beide Modi werden deshalb abgelehnt, solange nicht `force` angehängt wird:
+
+```
+set Staubsauger startCleaning explore force
+```
+
 Die Konsole kennt keinen Befehl, um persistente Karten-IDs anzulegen,
 zuzuweisen oder abzufragen. Die Vermutung liegt daher nahe, dass diese IDs von
-der Cloud kamen und beide Modi ohne sie nicht starten – belegt ist das nicht,
-nur das beobachtete Verhalten. `house` und `spot` laufen normal.
+der Cloud kamen – belegt ist das nicht, nur das beobachtete Verhalten. `house`
+und `spot` laufen normal.
 
 ### Zustand
 

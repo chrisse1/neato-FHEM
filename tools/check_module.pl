@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 252;
+use Test::More tests => 260;
 
 package main;
 
@@ -958,4 +958,40 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     is($queued[0], "GetErr Clear", "first the documented one, for errors");
     is($queued[1], "SetUIError clearall", "then the undocumented one, for alerts");
     is($queued[2], "GetErr", "and reads back what is left");
+}
+
+# --- a mode that costs the robot its next run ------------------------------
+# explore leaves a D6 waiting for map IDs that nothing delivers, and afterwards
+# it accepts cleaning commands without acting on them until it is power-cycled.
+{
+    my ($eh, $er) = mkdev("exp NeatoLocal 192.168.1.42:23");
+    $eh->{helper}{skey} = "deadbeef";
+    $eh->{helper}{queue} = [];
+    @WRITTEN = ();
+
+    my $refusal = NeatoLocal_Set($eh, "exp", "startCleaning", "explore");
+    like($refusal, qr/switched off and on again/,
+         "explore is refused, with what it costs");
+    like($refusal, qr/startCleaning explore force/, "and how to do it anyway");
+    is(scalar(@WRITTEN), 0, "and nothing reaches the robot");
+
+    $refusal = NeatoLocal_Set($eh, "exp", "startCleaning", "persistent");
+    like($refusal, qr/switched off and on again/, "persistent likewise");
+
+    # house and spot are unaffected -- they are the button path, not the app.
+    @WRITTEN = ();
+    $eh->{helper}{queue} = [];
+    is(NeatoLocal_Set($eh, "exp", "startCleaning", "house"), undef,
+       "house still goes through");
+    ok(scalar(@WRITTEN) > 0, "and reaches the robot");
+
+    # force is the way past it, for anyone who wants to try. A command may wait
+    # in the queue rather than go out at once, so both are counted.
+    @WRITTEN = ();
+    $eh->{helper}{queue} = [];
+    delete $eh->{helper}{pending};
+    is(NeatoLocal_Set($eh, "exp", "startCleaning", "explore", "force"), undef,
+       "force gets through");
+    my @sent = (@WRITTEN, map { $_->{cmd} } @{$eh->{helper}{queue}});
+    ok(scalar(grep { /Clean Explore/ } @sent) > 0, "and sends Clean Explore");
 }
