@@ -44,7 +44,6 @@ Kartenrand-Stecker auf Ober- und Unterseite der Hauptplatine, beschriftet
 
 * ESP32-C3 (z. B. „Super Mini“, ~3 €). **Mindestens 4 MB Flash** – die
   2-MB-Varianten reichen für OpenNeato nicht.
-  Ein ESP8266 (≥ 1 MB) tut es auch, siehe unten.
 * JST-XH-2,54-mm-4-Pin-Steckverbinder mit vorgecrimpten Litzen
 * T10 Torx **Security** Bit zum Öffnen des Roboters
 * Lötkolben
@@ -77,26 +76,26 @@ Zwei erprobte Optionen, beide funktionieren mit diesem FHEM-Modul:
   Modelle, ESP8266) – Websocket/HTML-Interface. Sendet aus Sicherheitsgründen
   automatisch `TestMode off`, wenn ein Client die Verbindung trennt.
 
-* **[neato_bridge](../firmware/)** (dieses Repo, ESP32-C3 *und* ESP8266) –
+* **[neato_bridge](../firmware/)** (dieses Repo, ESP32-C3) –
   dumme TCP-zu-UART-Brücke mit Statusseite, die gesamte Logik bleibt im
   FHEM-Modul. FHEM: `define Staubsauger NeatoLocal neato.local:23`
 
-## ESP8266 statt ESP32-C3
+## Warum kein ESP8266
 
-Ein vorhandener ESP8266 (NodeMCU LoLin V3, ESP-12F o. ä.) funktioniert für
-D3–D7 genauso, die Konsole ist dieselbe. Drei Punkte sind anders:
+Die Brücken-Firmware hat den ESP8266 bis Version 0.13.1 mitgebaut. Zwei Gründe
+haben dagegen entschieden:
 
-1. **Nur eine brauchbare UART.** UART0 liegt normalerweise auf GPIO1/GPIO3 –
-   dort gibt das Boot-ROM beim Reset seinen Startmüll mit 74880 Baud aus, der
-   sonst in der Roboterkonsole landet. `Serial.swap()` legt UART0 nach dem Boot
-   auf GPIO13/GPIO15; nur diese beiden Pins gehen an den Roboter.
-   Verdrahtung: Roboter TX → **D7/GPIO13**, Roboter RX → **D8/GPIO15**.
-2. **Stromversorgung am 3V3-Pin, nicht an Vin/VU.** Vin läuft über den
-   AMS1117-Regler des Boards. Und niemals USB und Roboter-3,3 V gleichzeitig –
-   dann treiben Regler und Roboter dieselbe Schiene gegeneinander. Also: über
-   USB flashen, USB abziehen, dann anschließen.
-3. **Höhere Stromspitzen als beim ESP32-C3.** 220 µF Elko plus 100 nF direkt am
-   Modul zwischen 3V3 und GND einplanen.
+1. **Nur eine brauchbare UART.** Sobald sie zum Roboter zeigt, ist der serielle
+   Monitor tot – und damit die Konfigurationskonsole, der Bootlog, `wifi scan`
+   und `info`, also genau das, womit sich ein Einrichtungsproblem eingrenzen
+   lässt.
+2. **Jede Funkfunktion brauchte eine eigene Verzweigung.** Trennen,
+   Stromsparen, Länderkennung und die Verschlüsselungscodes heißen auf beiden
+   Plattformen verschieden. In diesen Verzweigungen saßen die meisten Fehler
+   dieser Firmware.
+
+Wer es trotzdem versuchen will: der Stand mit beiden Plattformen liegt in der
+Git-Historie vor 0.14.0.
 
 Der Formfaktor eines LoLin V3 ist für den Dauereinbau unhandlich – zum
 Entwickeln und Testen ist er völlig in Ordnung, für den fertigen Aufbau ist ein

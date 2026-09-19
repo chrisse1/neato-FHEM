@@ -6,10 +6,7 @@
  *
  *     define Staubsauger NeatoLocal <ip-of-this-board>:23
  *
- * Builds for both boards from the same source:
- *
- *   ESP32-C3  (recommended, e.g. "Super Mini")  -- fqbn esp32:esp32:esp32c3
- *   ESP8266   (NodeMCU LoLin V3, ESP-12F)       -- fqbn esp8266:esp8266:nodemcuv2
+ * Target: ESP32-C3, e.g. a "Super Mini" -- fqbn esp32:esp32:esp32c3
  *
  * The bridge stays deliberately dumb: it does not parse, buffer by command or
  * rewrite anything, so the FHEM module keeps full control of the console. Two
@@ -23,50 +20,36 @@
  * WIRING -- the robot's debug header is RX | 3.3V | TX | GND (left to right).
  * TX and RX are crossed:
  *
- *   ESP32-C3        Robot TX -> GPIO4 (RX)    Robot RX <- GPIO5 (TX)
- *   ESP8266         Robot TX -> D7/GPIO13     Robot RX <- D8/GPIO15
- *   both            GND -- GND,  robot 3.3V -> the board's 3V3 pin
+ *   Robot TX -> GPIO4 (RX),  Robot RX <- GPIO5 (TX)
+ *   GND -- GND,  robot 3.3V -> the board's 3V3 pin
  *
  * Never feed the board from USB and the robot at the same time: flash over USB
  * with the robot disconnected, unplug USB, then connect the robot. A 220 uF
  * electrolytic plus 100 nF across 3V3/GND at the module absorbs the WiFi
  * transmit peaks.
  *
- * Serial layout differs per board, and that difference is the reason the C3 is
- * the nicer target:
- *
- *   ESP32-C3  A dedicated UART (Serial1) talks to the robot while the USB CDC
- *             port stays free, so the serial monitor keeps working forever.
- *   ESP8266   Only one usable UART. Serial.swap() moves it off GPIO1/GPIO3 --
- *             where the boot ROM prints its startup chatter at 74880 baud --
- *             onto GPIO13/GPIO15. After the swap the USB port is dead, so
- *             everything this sketch prints before it is your only feedback
- *             while flashing. Watch the monitor at 115200 baud.
+ * A dedicated UART (Serial1) talks to the robot while the USB CDC port stays
+ * free, so the serial monitor keeps working for good -- that is what makes the
+ * C3 the right target here, and the reason this sketch no longer carries the
+ * ESP8266, which has only one usable UART and loses its console to the robot.
+ * Watch the monitor at 115200 baud.
  *
  * Part of https://github.com/chrisse1/neato-FHEM
  */
 
-#if defined(ARDUINO_ARCH_ESP8266)
-  #include <ESP8266WiFi.h>
-  #include <ESP8266mDNS.h>
-  #include <ArduinoOTA.h>
-  extern "C" {
-    #include <user_interface.h>   // wifi_set_country()
-  }
-  #define ROBOT Serial          // UART0, moved to GPIO13/GPIO15 in setup()
-#elif defined(ARDUINO_ARCH_ESP32)
-  #include <WiFi.h>
-  #include <ESPmDNS.h>
-  #include <ArduinoOTA.h>
-  #include <Preferences.h>
-  #include <esp_wifi.h>         // esp_wifi_set_country_code()
-  #include <esp_system.h>       // esp_reset_reason()
-  #include <esp_partition.h>    // the credentials block written at flash time
-  #define ROBOT Serial1         // dedicated UART, USB CDC stays free
-  #define HAVE_CONFIG_STORE 1   // credentials live in NVS, not in this file
-#else
-  #error "neato_bridge targets ESP8266 or ESP32"
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "neato_bridge targets the ESP32-C3"
 #endif
+
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
+#include <Preferences.h>
+#include <esp_wifi.h>         // esp_wifi_set_country_code()
+#include <esp_system.h>       // esp_reset_reason()
+#include <esp_partition.h>    // the credentials block written at flash time
+
+#define ROBOT Serial1         // dedicated UART, the USB CDC port stays free
 
 // ---------------------------------------------------------------- config ---
 
@@ -95,7 +78,7 @@
 #define ROBOT_TX_PIN 5
 #endif
 
-static const char *VERSION = "0.13.1";
+static const char *VERSION = "0.14.0";
 static const char *HOSTNAME = "neato";     // reachable as neato.local
 static const uint16_t TCP_PORT = 23;       // must match the FHEM define
 static const uint16_t HTTP_PORT = 80;      // status page
@@ -118,15 +101,9 @@ static uint32_t lastRobotByte = 0;     // millis() of the last byte the robot se
 static uint32_t clientCount = 0;
 static uint32_t linkDrops = 0;         // how often the link was found down
 
-// On the ESP8266 the debug port and the robot port are the same UART, so once
-// the swap has happened nothing may be printed any more -- it would land in the
-// robot's console. On the ESP32 the USB port stays ours for good.
-static bool debugUsable = true;
-
-// The credentials the board is actually using. On the ESP32 they are kept in
-// NVS so one prebuilt image fits every network; the #defines above only serve
-// as a fallback for a self-compiled binary. The ESP8266 has no NVS and no
-// spare serial port, so there they stay compile-time values.
+// The credentials the board is actually using. They live in NVS, so one prebuilt
+// image fits every network; the #defines above are only a fallback for a
+// self-compiled binary.
 static String wifiSsid;
 static String wifiPsk;
 static bool apMode = false;     // no credentials: running as an access point
@@ -139,13 +116,8 @@ static volatile int lastDisconnectReason = 0;
 // one says something about this sketch, not about the router, so it must not
 // overwrite the reason the diagnosis rests on.
 static volatile bool ignoreDisconnects = false;
-#if defined(ARDUINO_ARCH_ESP8266)
-static WiFiEventHandler disconnectHandler;
-#endif
 
-#if HAVE_CONFIG_STORE
 static Preferences prefs;
-#endif
 
 // What a freshly flashed image carries when nobody filled the defines in.
 static bool isPlaceholder(const String &ssid) {
@@ -170,7 +142,6 @@ static bool isPlaceholder(const String &ssid) {
 
 static bool seedUsed = false;      // for the boot log: where the network came from
 
-#if HAVE_CONFIG_STORE
 // The stock partition schemes do not agree on a name for the storage partition,
 // so the candidates are listed rather than guessed at -- the same list the
 // flashing side uses to find the offset.
@@ -223,10 +194,8 @@ static bool configSeedTake(String &ssid, String &psk) {
   esp_partition_erase_range(part, 0, 4096);
   return true;
 }
-#endif
 
 static void configLoad() {
-#if HAVE_CONFIG_STORE
   // Whatever the flashing tool left behind wins: it is newer than anything in
   // NVS by definition, and it is gone after this.
   String seedSsid, seedPsk;
@@ -242,7 +211,6 @@ static void configLoad() {
   wifiSsid = prefs.getString("ssid", "");
   wifiPsk = prefs.getString("psk", "");
   prefs.end();
-#endif
   if (isPlaceholder(wifiSsid)) {
     wifiSsid = WIFI_SSID;
     wifiPsk = WIFI_PSK;
@@ -254,7 +222,6 @@ static void configLoad() {
 }
 
 static bool configSave(const String &ssid, const String &psk) {
-#if HAVE_CONFIG_STORE
   if (ssid.length() == 0 || ssid.length() > 32 || psk.length() > 63) {
     return false;
   }
@@ -265,53 +232,34 @@ static bool configSave(const String &ssid, const String &psk) {
   wifiSsid = ssid;
   wifiPsk = psk;
   return true;
-#else
-  (void)ssid;
-  (void)psk;
-  return false;   // nowhere to put them
-#endif
 }
 
 // Read the credentials straight back out of the store. Saving reports success
 // even when the partition is full or missing, and a board that silently keeps
 // nothing looks exactly like a wrong password after the next restart.
 static bool configVerify(const String &ssid, const String &psk) {
-#if HAVE_CONFIG_STORE
   prefs.begin("neato", true);
   String storedSsid = prefs.getString("ssid", "");
   String storedPsk = prefs.getString("psk", "");
   prefs.end();
   return storedSsid == ssid && storedPsk == psk;
-#else
-  (void)ssid;
-  (void)psk;
-  return false;
-#endif
 }
 
 static void configClear() {
-#if HAVE_CONFIG_STORE
   prefs.begin("neato", false);
   prefs.clear();
   prefs.end();
-#endif
 }
 
 // --------------------------------------------------------------- helpers ---
 
 static void dbg(const String &line) {
-  if (debugUsable) {
-    Serial.println(line);
-  }
+  Serial.println(line);
 }
 
 // Accept a pending connection. The spelling changed across core versions.
 static WiFiClient acceptFrom(WiFiServer &server) {
-#if defined(ARDUINO_ARCH_ESP8266) && defined(ARDUINO_ESP8266_MAJOR) && ARDUINO_ESP8266_MAJOR < 3
-  return server.available();  // pre-3.0 core spelling
-#else
   return server.accept();
-#endif
 }
 
 // Leave the robot in a usable state: in test mode it ignores its buttons and
@@ -330,31 +278,13 @@ static void dropClient() {
 }
 
 static void setupRobotSerial() {
-#if defined(ARDUINO_ARCH_ESP8266)
-  Serial.setRxBufferSize(1024);  // has to be set before the port is opened
-  Serial.begin(ROBOT_BAUD);
-#else
   Serial.begin(115200);          // USB CDC, stays available
   Serial1.setRxBufferSize(1024);
   Serial1.begin(ROBOT_BAUD, SERIAL_8N1, ROBOT_RX_PIN, ROBOT_TX_PIN);
-#endif
 }
 
-// ESP8266 only: hand UART0 over to the robot. Everything printed after this
-// would go down the robot's throat, so debug output ends here.
-static void handOverSerial() {
-#if defined(ARDUINO_ARCH_ESP8266)
-  Serial.println(F("switching UART0 to GPIO13/GPIO15 now; this is the last "
-                   "message on the USB port. Use the status page from here on."));
-  Serial.flush();
-  delay(50);
-  Serial.swap();
-  debugUsable = false;
-#endif
-}
-
-// The codes both SDKs agree on. Anything unlisted is printed as a bare number
-// rather than guessed at.
+// The disconnect codes worth naming. Anything unlisted is printed as a bare
+// number rather than guessed at.
 static const __FlashStringHelper *disconnectReasonText(int reason) {
   switch (reason) {
     case 2:   return F("authentication expired");
@@ -373,8 +303,8 @@ static const __FlashStringHelper *disconnectReasonText(int reason) {
 static void printDisconnectReason() {
   Serial.print(F("reason "));
   Serial.print(lastDisconnectReason);
-  // No peeking inside the string: on the ESP8266 it lives in PROGMEM and
-  // cannot be read byte by byte like this.
+  // NULL for an unknown code rather than an empty F(""), which would have to be
+  // inspected to tell it apart -- and a flash string is not for poking at.
   const __FlashStringHelper *text = disconnectReasonText(lastDisconnectReason);
   if (text != NULL) {
     Serial.print(' ');
@@ -385,36 +315,18 @@ static void printDisconnectReason() {
 
 // Registered once, before the first connect attempt, so nothing is missed.
 static void watchDisconnects() {
-#if defined(ARDUINO_ARCH_ESP8266)
-  disconnectHandler = WiFi.onStationModeDisconnected(
-      [](const WiFiEventStationModeDisconnected &event) {
-        if (!ignoreDisconnects) {
-          lastDisconnectReason = (int)event.reason;
-        }
-      });
-#else
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
     if (!ignoreDisconnects) {
       lastDisconnectReason = (int)info.wifi_sta_disconnected.reason;
     }
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-#endif
 }
 
 // Must be applied after the radio is up, i.e. after WiFi.mode(), and again
 // whenever the mode changes.
 static void applyRegulatoryDomain() {
-#if defined(ARDUINO_ARCH_ESP8266)
-  wifi_country_t country;
-  memcpy(country.cc, WIFI_COUNTRY, 3);
-  country.schan = 1;
-  country.nchan = 13;
-  country.policy = WIFI_COUNTRY_POLICY_MANUAL;
-  wifi_set_country(&country);
-#else
   // true: follow the access point's own country information once associated.
   esp_wifi_set_country_code(WIFI_COUNTRY, true);
-#endif
 }
 
 // What the board can actually see. A network that only exists on 5 GHz, and a
@@ -426,9 +338,6 @@ static void applyRegulatoryDomain() {
 // host looks nothing like a brownout or a crash -- but all three end with a
 // board that went away for a moment.
 static String bootReason() {
-#if defined(ARDUINO_ARCH_ESP8266)
-  return ESP.getResetReason();
-#else
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON:   return F("power on");
     case ESP_RST_EXT:       return F("external reset");
@@ -441,22 +350,11 @@ static String bootReason() {
     case ESP_RST_BROWNOUT:  return F("brownout -- the supply dipped");
     default:                return String(F("code ")) + (int)esp_reset_reason();
   }
-#endif
 }
 
-// The SDKs number the modes differently, so the board resolves them rather
-// than leaving a number for somebody else to look up wrongly.
+// Resolved on the board rather than left as a number for somebody else to look
+// up -- the value is meant to be read by a person.
 static const __FlashStringHelper *encryptionName(int index) {
-#if defined(ARDUINO_ARCH_ESP8266)
-  switch (WiFi.encryptionType(index)) {
-    case ENC_TYPE_NONE: return F("open");
-    case ENC_TYPE_WEP:  return F("WEP");
-    case ENC_TYPE_TKIP: return F("WPA");
-    case ENC_TYPE_CCMP: return F("WPA2");
-    case ENC_TYPE_AUTO: return F("WPA/WPA2");
-    default:            return F("?");
-  }
-#else
   switch (WiFi.encryptionType(index)) {
     case WIFI_AUTH_OPEN:          return F("open");
     case WIFI_AUTH_WEP:           return F("WEP");
@@ -467,16 +365,10 @@ static const __FlashStringHelper *encryptionName(int index) {
     case WIFI_AUTH_WPA2_WPA3_PSK: return F("WPA2/WPA3");
     default:                      return F("?");
   }
-#endif
 }
 
-// The disconnect call is spelled differently per core.
 static void stopStation(bool radioOff) {
-#if defined(ARDUINO_ARCH_ESP8266)
-  WiFi.disconnect(radioOff);
-#else
   WiFi.disconnect(radioOff, false);
-#endif
 }
 
 // Bring the radio down and up again. A software reset leaves the WiFi hardware
@@ -520,21 +412,13 @@ static void startAccessPoint(bool keepTrying, bool announce = true);
 //
 // So the access point is taken down for the duration and put back afterwards.
 static void scanNetworks() {
-  if (!debugUsable) {
-    return;
-  }
-
   bool resume = wifiSsid.length() > 0;
   bool hadAccessPoint = apMode;
 
   ignoreDisconnects = true;
   WiFi.mode(WIFI_STA);          // drops the soft AP if one was running
   applyRegulatoryDomain();
-#if defined(ARDUINO_ARCH_ESP8266)
-  WiFi.disconnect(false);
-#else
   WiFi.disconnect(false, false);
-#endif
   delay(200);
 
   // A scan that collides with something else on the radio returns at once and
@@ -624,7 +508,7 @@ static void startAccessPoint(bool keepTrying, bool announce) {
     WiFi.begin(wifiSsid.c_str(), wifiPsk.c_str());
   }
 
-  if (debugUsable && announce) {
+  if (announce) {
     Serial.print(F("access point 'neato-setup' at "));
     Serial.print(WiFi.softAPIP());
     Serial.println(keepTrying ? F(" -- still trying the configured network")
@@ -639,23 +523,15 @@ static bool connectAttempt(uint32_t timeoutMs) {
   // only sends, and wrong for one that has to answer: incoming connections
   // arrive late or not at all, and an access point may drop a sleeping client
   // altogether. The bridge exists to be called, so it stays awake.
-#if defined(ARDUINO_ARCH_ESP8266)
-  WiFi.setSleepMode(WIFI_NONE_SLEEP);
-#else
   WiFi.setSleep(false);
-#endif
 
   uint32_t deadline = millis() + timeoutMs;
   while (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - deadline) < 0) {
-    if (debugUsable) {
-      Serial.print('.');
-    }
+    Serial.print('.');
     delay(200);
     yield();
   }
-  if (debugUsable) {
-    Serial.println();
-  }
+  Serial.println();
   return WiFi.status() == WL_CONNECTED;
 }
 
@@ -679,11 +555,7 @@ static void setupWifi() {
   WiFi.mode(WIFI_STA);
   applyRegulatoryDomain();
   watchDisconnects();
-#if defined(ARDUINO_ARCH_ESP8266)
-  WiFi.hostname(HOSTNAME);
-#else
   WiFi.setHostname(HOSTNAME);
-#endif
   WiFi.setAutoReconnect(true);
 
   // Do not block forever -- the robot has to stay reachable over serial even
@@ -694,9 +566,7 @@ static void setupWifi() {
 
   // 1 = name not found, 4 = rejected (usually the password), 6 = given up.
   dbg(String(F("no connection, WiFi.status() = ")) + (int)WiFi.status());
-  if (debugUsable) {
-    printDisconnectReason();
-  }
+  printDisconnectReason();
 
   // Second attempt on a radio that has really been off. After a software reset
   // the first one can fail on hardware state alone, and then everything after
@@ -711,15 +581,12 @@ static void setupWifi() {
   // A wrong password should not leave the board unreachable for good -- but
   // neither should a router that simply took its time.
   dbg(String(F("still no connection, WiFi.status() = ")) + (int)WiFi.status());
-  if (debugUsable) {
-    printDisconnectReason();
-  }
+  printDisconnectReason();
   scanNetworks();
   startAccessPoint(true);
 }
 
 // ------------------------------------------------------- config console ----
-#if HAVE_CONFIG_STORE
 // A line-based console on the USB port. This is what FHEM talks to right after
 // flashing, while the board is still plugged into the server: no access point
 // to join, no phone, no second network.
@@ -849,7 +716,6 @@ static void consolePoll() {
     }
   }
 }
-#endif  // HAVE_CONFIG_STORE
 
 // --------------------------------------------------------------- status ----
 
@@ -877,14 +743,10 @@ static void sendStatusPage(WiFiClient &http) {
             "</style><h1>neato_bridge ");
   body += VERSION;
   body += F("</h1><table><tr><td>Board</td><td>");
-#if defined(ARDUINO_ARCH_ESP8266)
-  body += F("ESP8266, UART0 on GPIO13/GPIO15");
-#else
-  body += F("ESP32, UART1 on GPIO");
+  body += F("ESP32-C3, UART1 on GPIO");
   body += ROBOT_RX_PIN;
   body += F("/GPIO");
   body += ROBOT_TX_PIN;
-#endif
 
   body += F("</td></tr><tr><td>WiFi</td><td>");
   body += WiFi.SSID();
@@ -970,7 +832,6 @@ static void sendTestPage(WiFiClient &http) {
   sendPage(http, body);
 }
 
-#if HAVE_CONFIG_STORE
 // Percent decoding for the values coming back from the setup form.
 static String urlDecode(const String &in) {
   String out;
@@ -1021,7 +882,6 @@ static void sendSetupPage(WiFiClient &http, const String &note) {
             "<button type=submit>Speichern</button></form>");
   sendPage(http, body);
 }
-#endif  // HAVE_CONFIG_STORE
 
 static void handleHttp() {
   WiFiClient http = acceptFrom(httpServer);
@@ -1046,7 +906,6 @@ static void handleHttp() {
 
   bool handled = false;
 
-#if HAVE_CONFIG_STORE
   if (line.startsWith("GET /wifi?")) {
     int from = line.indexOf('?') + 1;
     int to = line.indexOf(' ', from);
@@ -1076,7 +935,6 @@ static void handleHttp() {
     sendSetupPage(http, "");
     handled = true;
   }
-#endif
 
   if (!handled) {
     if (line.startsWith("GET /test")) {
@@ -1116,8 +974,6 @@ void setup() {
     dbg(F("WiFi not connected -- check SSID and password. "
           "The SDK keeps retrying in the background."));
   }
-
-  handOverSerial();  // ESP8266 only; the C3 keeps its USB port
 
   MDNS.begin(HOSTNAME);
   MDNS.addService("http", "tcp", HTTP_PORT);
@@ -1188,12 +1044,7 @@ static void superviseLink() {
 void loop() {
   ArduinoOTA.handle();
   superviseLink();
-#if HAVE_CONFIG_STORE
   consolePoll();
-#endif
-#if defined(ARDUINO_ARCH_ESP8266)
-  MDNS.update();
-#endif
   handleHttp();
 
   // Accept a new connection. A single client owns the console; a fresh

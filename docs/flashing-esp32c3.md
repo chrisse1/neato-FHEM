@@ -111,7 +111,7 @@ status page: http://192.168.1.57/  or http://neato.local/
 FHEM: define Staubsauger NeatoLocal 192.168.1.57:23
 ```
 
-Anders als beim ESP8266 bleibt der Monitor beim C3 dauerhaft nutzbar – die
+Der Monitor bleibt beim C3 dauerhaft nutzbar – die
 UART zum Roboter ist eine andere.
 
 Bleibt der Monitor leer: USB CDC On Boot prüfen (Schritt 2).

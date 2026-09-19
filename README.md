@@ -36,8 +36,8 @@ Drei Transportwege, alle vom selben Modul bedient:
 | HTTP | `http://neato.local` | [OpenNeato](https://github.com/renjfk/OpenNeato) auf einem ESP32-C3 |
 
 Für die TCP-Variante liegt in [`firmware/`](firmware/) eine passende
-Brücken-Firmware: ein Sketch für ESP32-C3 und ESP8266, der im Roboter verbaut
-wird und dessen Konsole ins Netz bringt. Verdrahtung, Stromversorgung und eine
+Brücken-Firmware: ein Sketch für den ESP32-C3, der im Roboter verbaut wird und
+dessen Konsole ins Netz bringt. Verdrahtung, Stromversorgung und eine
 Schritt-für-Schritt-Flash-Anleitung stehen in
 [docs/hardware.md](docs/hardware.md) und
 [docs/flashing-esp32c3.md](docs/flashing-esp32c3.md).
@@ -518,7 +518,7 @@ python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über T
 
 Alle drei laufen ohne FHEM-Installation und ohne Roboter. Die Testdaten sind
 wörtliche Konsolenausgaben eines BotVac D6. Die CI führt sie bei jedem Push aus
-und übersetzt zusätzlich die Brücken-Firmware für ESP32-C3 und ESP8266.
+und übersetzt zusätzlich die Brücken-Firmware für den ESP32-C3.
 
 ## Lizenz
 

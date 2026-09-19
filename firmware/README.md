@@ -3,36 +3,35 @@
 `neato_bridge` ist eine bewusst dumme Brücke: TCP rein, serielle Konsole raus,
 ohne zu parsen. Die gesamte Logik bleibt im FHEM-Modul.
 
-Ein Sketch, zwei Boards:
+Zielplattform: **ESP32-C3** (z. B. Super Mini), FQBN
+`esp32:esp32:esp32c3`.
 
-| Board | FQBN | Anmerkung |
-|---|---|---|
-| **ESP32-C3** (z. B. Super Mini) | `esp32:esp32:esp32c3` | empfohlen |
-| ESP8266 (NodeMCU LoLin V3, ESP-12F) | `esp8266:esp8266:nodemcuv2` | funktioniert, mit Einschränkungen |
-
-## Warum der C3 die bessere Wahl ist
-
-Der ESP8266 hat nur **eine** brauchbare UART. Die liegt normal auf GPIO1/GPIO3,
-wo das Boot-ROM beim Reset seinen Startmüll mit 74880 Baud ausgibt – der würde
-in der Roboterkonsole landen. `Serial.swap()` legt sie deshalb auf
-GPIO13/GPIO15. Der Preis: **danach ist der serielle Monitor tot**, weil es
-dieselbe Schnittstelle ist. Diagnose nur noch über die Statusseite.
+## Warum nur der C3
 
 Der C3 hat eine eigene UART für den Roboter, während der USB-CDC-Port frei
-bleibt. Der serielle Monitor funktioniert also dauerhaft. Dazu ist er kleiner
-und zieht weniger Strom aus der 3,3-V-Schiene des Roboters.
+bleibt – genau das, was diese Firmware braucht: Konfigurationskonsole,
+Bootlog, `wifi scan`, `info`. Dazu ist er klein und zieht wenig Strom aus der
+3,3-V-Schiene des Roboters.
+
+Der ESP8266 wurde unterstützt und ist es nicht mehr. Er hat nur **eine**
+brauchbare UART; sobald die zum Roboter zeigt, ist der serielle Monitor tot,
+und damit jede Diagnose außer der Statusseite. Dazu kam, dass jede Funkfunktion
+eine eigene Verzweigung brauchte – Trennen, Stromsparen, Länderkennung,
+Verschlüsselungscodes heißen dort jeweils anders. Genau in diesen Verzweigungen
+saßen die meisten Fehler dieser Firmware. Wer den Sketch für einen ESP8266
+anpassen will: die Historie vor 0.14.0 enthält den Stand mit beiden Plattformen.
 
 ## Verdrahtung
 
 Der Debug-Header im Roboter ist `RX | 3.3V | TX | GND` (von links). TX und RX
 werden **gekreuzt**:
 
-| Roboter | ESP32-C3 | ESP8266 |
-|---|---|---|
-| TX | GPIO4 (RX) | D7 / GPIO13 |
-| RX | GPIO5 (TX) | D8 / GPIO15 |
-| GND | GND | GND |
-| 3.3V | **3V3** | **3V3** |
+| Roboter | ESP32-C3 |
+|---|---|
+| TX | GPIO4 (RX) |
+| RX | GPIO5 (TX) |
+| GND | GND |
+| 3.3V | **3V3** |
 
 Beim C3 sind die Pins über `ROBOT_RX_PIN` und `ROBOT_TX_PIN` einstellbar.
 GPIO4/GPIO5 sind beim Super Mini frei und kollidieren – anders als GPIO20/21 –
@@ -46,8 +45,9 @@ nicht mit der Konsole des Boards.
 
 Nie beides gleichzeitig – sonst treiben der Bordregler und der Roboter
 dieselbe Schiene gegeneinander. 220 µF Elko plus 100 nF direkt am Modul
-zwischen 3V3 und GND spendieren; die Sendespitzen sind beim ESP8266 deutlich
-höher als beim C3.
+zwischen 3V3 und GND spendieren – die Sendespitzen des Funkmoduls ziehen die
+Schiene sonst kurz unter die Grenze, und das sieht aus wie ein sporadischer
+Verbindungsabbruch.
 
 ## Fertiges Image
 
@@ -92,30 +92,20 @@ Ausführlich in [docs/flashing-esp32c3.md](../docs/flashing-esp32c3.md), kurz:
 6. Hochladen, seriellen Monitor auf 115200 öffnen. Startet der Upload nicht:
    BOOT halten, RESET tippen, BOOT loslassen.
 
-### ESP8266
-
-1. Boardverwalter-URL
-   `http://arduino.esp8266.com/stable/package_esp8266com_index.json`,
-   dann „esp8266 by ESP8266 Community" installieren.
-2. Board: **NodeMCU 1.0 (ESP-12E Module)**, Flash Size **4MB (FS:2MB
-   OTA:~1019KB)**, Upload Speed 115200 (bei Abbrüchen 57600).
-3. CH340 an Bord, erscheint als `/dev/ttyUSB0`. Benutzer ggf. in Gruppe
-   `dialout`.
-4. SSID und Passwort eintragen, hochladen, Monitor auf 115200.
-
-In beiden Fällen sollte nach einem Reset das hier stehen:
+Nach einem Reset sollte das hier stehen:
 
 ```
-neato_bridge 0.3.0
-connecting to MeinWLAN
+neato_bridge 0.14.0
+boot: power on
+connecting to 'MeinWLAN' (16 character password, from the flashed block)
 ...
-connected, IP 192.168.1.57
+connected to MeinWLAN
+IP 192.168.1.57
 status page: http://192.168.1.57/  or http://neato.local/
 FHEM: define Staubsauger NeatoLocal 192.168.1.57:23
 ```
 
-Auf dem ESP8266 folgt danach der Hinweis auf den UART-Swap, und der Monitor
-verstummt. Das ist Absicht, kein Absturz. Auf dem C3 bleibt er nutzbar.
+Der Monitor bleibt danach nutzbar – der Roboter hängt an einer eigenen UART.
 
 ## Statusseite
 
@@ -156,14 +146,6 @@ sie hält sonst die Schnittstelle.
 
 ## Verifizierter Build
 
-Die CI übersetzt den Sketch bei jedem Push für **beide** Boards, den C3 mit
-genau den Optionen, die die Anleitung empfiehlt.
-
-| | ESP32-C3 | ESP8266 |
-|---|---|---|
-| Programm | 1 045 KB (53 % von 1,9 MB) | 291 KB (28 % von 1 MB) |
-| RAM global | 41,9 KB (12 %) | 28,9 KB (36 %) |
-| Besonderheit | – | IRAM zu 92 % belegt |
-
-Die 92 % IRAM auf dem ESP8266 sind für einen ESP8266 mit WLAN normal, aber der
-Grund, hier keine weiteren Bibliotheken aufzunehmen.
+Die CI übersetzt den Sketch bei jedem Push, mit genau den Optionen, die die
+Anleitung empfiehlt – und baut daraus das fertige Image. Was dort gebaut wird,
+ist also dasselbe, was geflasht wird.
