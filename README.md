@@ -265,7 +265,23 @@ steht im Reading `lastFlash`.
 
 **Das geht nur vor dem Einbau.** Die Brücke wird im Roboter von dessen 3,3-V-
 Schiene versorgt und hängt dann nicht mehr am USB-Port des Servers. Ist sie
-einmal verbaut, führt der Weg über OTA.
+einmal verbaut, führt der Weg über Funk:
+
+```
+set Staubsauger otaESP
+```
+
+`otaESP` holt die veröffentlichte **Anwendung** – nicht das Image von oben,
+sondern die Variante ohne Bootloader und Partitionstabelle, weil ein Update in
+eine App-Partition geschrieben wird – und schiebt sie über das
+ArduinoOTA-Protokoll auf die Brücke. Die Adresse nimmt der Befehl vom Gerät;
+eine abweichende lässt sich voranstellen: `set Staubsauger otaESP 192.168.1.150`.
+
+Das funktioniert auch mit Brücken, die lange vor diesem Befehl geflasht wurden:
+OTA war von der ersten Version an im Sketch. Das Protokoll ist in reinem Perl
+im Modul umgesetzt, `espota.py` aus dem Arduino-Core braucht es also nicht.
+`tools/check_ota.pl` fährt den Ablauf gegen einen Stellvertreter der Brücke und
+vergleicht das angekommene Image Byte für Byte.
 
 Wer nicht vom FHEM-Rechner aus flasht: ein Board ohne gespeicherte Zugangsdaten
 öffnet den Access Point `neato-setup` mit einer Eingabeseite. Dieselben

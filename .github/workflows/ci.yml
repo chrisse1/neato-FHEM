@@ -26,6 +26,12 @@ jobs:
       - name: Check the partition table reader
         run: python3 tools/check_partition.py
 
+      # Drives the real OTA client against a stand-in for the bridge. The
+      # protocol is not ours, so this is the only check that says the module
+      # speaks it -- including that the image arrives byte for byte.
+      - name: Check the over-the-air update
+        run: perl tools/check_ota.pl
+
   # One target, the same one the published image is built for. The ESP8266 is
   # gone: its single UART costs the console the sketch needs for setup and
   # diagnosis, and keeping a second platform alive meant a conditional at every

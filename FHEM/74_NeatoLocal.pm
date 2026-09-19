@@ -31,20 +31,31 @@ package main;
 use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
+use IO::Socket::INET;
+use IO::Select;
+use Digest::MD5;
 
-my $NeatoLocal_VERSION = "0.13.0";
+my $NeatoLocal_VERSION = "0.14.0";
 
-# Where flashESP gets the image when nothing else is configured. The project's
-# CI builds it on every firmware change, and the text file beside it carries the
-# offset of the partition the credentials block goes to.
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
 # that is merely slow is never cut short by it.
 my $NeatoLocal_flashLock = 600;
 
-my $NeatoLocal_imageURL =
-    "https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/"
-  . "firmware/prebuilt/neato_bridge-esp32c3.bin";
+# Where the images come from when nothing else is configured. The project's CI
+# builds both on every firmware change, and the text file beside them carries
+# the offset of the partition the credentials block goes to.
+#
+# Two files, because they go to different places: the first carries bootloader
+# and partition table and is written to offset 0 over USB, the second is the
+# application alone and is what an update over the air replaces.
+my $NeatoLocal_repoRaw =
+    "https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/firmware/prebuilt";
+my $NeatoLocal_imageURL = "$NeatoLocal_repoRaw/neato_bridge-esp32c3.bin";
+my $NeatoLocal_appURL   = "$NeatoLocal_repoRaw/neato_bridge-esp32c3-app.bin";
+
+# The OTA port the bridge listens on; the Arduino default for the ESP32.
+my $NeatoLocal_otaPort = 3232;
 
 # The Neato console terminates every response with SUB / Ctrl-Z (0x1A).
 my $NeatoLocal_EOR = chr(26);
@@ -70,6 +81,7 @@ my %NeatoLocal_sets = (
                       . "IRback,IRleft,IRright,IRhome,IReco",
     "flashESP"       => "textField",
     "wifiESP"        => "textField",
+    "otaESP"         => "textField",
     "statusRequest"  => "noArg",
     "reconnect"      => "noArg",
     "testMode"       => "on,off",
@@ -178,6 +190,7 @@ sub NeatoLocal_Initialize($) {
 
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
                       . "interval timeout connectTimeout espPort espImage "
+                      . "espAppImage "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1351,6 +1364,46 @@ sub NeatoLocal_Set($@) {
         return undef;
     }
 
+    if ($cmd eq "otaESP") {
+        return "an update over the air needs a bridge on the network, not an "
+             . "HTTP gateway" if ($hash->{TRANSPORT} eq "http");
+
+        my $since = $hash->{helper}{flashRunning};
+        if ($since) {
+            my $age = time() - ($since =~ m/^\d+$/ ? $since : 0);
+            return "a flash or provisioning run has been going for $age s. "
+                 . "It is given up on after $NeatoLocal_flashLock s."
+                if ($age < $NeatoLocal_flashLock);
+        }
+
+        # An address may be given for a bridge that has moved; otherwise the one
+        # the device already talks to is the right one.
+        my @rest = @args;
+        my $ip;
+        $ip = shift(@rest) if (defined($rest[0])
+                            && $rest[0] =~ m/^\d+\.\d+\.\d+\.\d+$/);
+        $ip = NeatoLocal_BridgeIp($hash) if (!defined($ip));
+
+        return "no address for the bridge. Give one: set $name otaESP "
+             . "<ip> [<image>]"
+            if (!defined($ip));
+
+        my $image = defined($rest[0]) && $rest[0] ne "" ? $rest[0]
+                  : AttrVal($name, "espAppImage", $NeatoLocal_appURL);
+
+        $hash->{helper}{flashRunning} = time();
+        readingsSingleUpdate($hash, "lastFlash", "ota running to $ip", 1);
+        Log3 $name, 3, "NeatoLocal ($name) - updating the bridge at $ip "
+                     . "over the air from $image";
+
+        BlockingCall("NeatoLocal_OtaBlocking",
+                     "$name|$ip|$NeatoLocal_otaPort|$image",
+                     "NeatoLocal_OtaDone", 300,
+                     "NeatoLocal_FlashAborted", $hash);
+        InternalTimer(gettimeofday() + 330, "NeatoLocal_FlashWatch", $hash);
+        return undef;
+    }
+
     if ($cmd eq "statusRequest") {
         NeatoLocal_StatusRequest($hash);
         return undef;
@@ -1753,6 +1806,189 @@ sub NeatoLocal_SeedOffset($) {
     return $offset;
 }
 
+# Where the bridge can be reached, for an update that cannot use a cable. The
+# reading is preferred: it was written by the run that put the bridge there.
+sub NeatoLocal_BridgeIp($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    my $fromReading = ReadingsVal($name, "bridgeAddress", "");
+    return $fromReading if ($fromReading =~ m/^\d+\.\d+\.\d+\.\d+$/);
+
+    my $addr = $hash->{DeviceName};
+    $addr = $hash->{DEF} if (!defined($addr) || $addr eq "");
+    return undef if (!defined($addr));
+
+    my ($ip) = ($addr =~ m/(\d+\.\d+\.\d+\.\d+)/);
+    return $ip;
+}
+
+# Push a firmware image to the bridge over the air. Every version of the bridge
+# has carried ArduinoOTA, including the ones installed in a robot before FHEM
+# could flash anything -- and that is the point: a bridge glued inside a robot
+# cannot be reached with a USB cable.
+#
+# The wire format is taken from the reference client (espota.py) and from the
+# device side (ArduinoOTA.cpp), not from memory:
+#
+#   1. listen on a TCP port
+#   2. send one UDP line "<command> <tcp port> <size> <md5>" to the OTA port
+#   3. the device answers "OK", or "AUTH <nonce>" when a password is set
+#   4. the device opens a TCP connection back to the announced port
+#   5. the image goes over in pieces; for each piece the device answers with the
+#      number of bytes it wrote, as decimal digits
+#   6. "OK" arrives once, after the last byte
+#
+# Written here rather than by calling espota.py: that script belongs to the
+# Arduino core, which a FHEM machine has no reason to have installed.
+sub NeatoLocal_OtaWork($) {
+    my ($string) = @_;
+    my ($name, $ip, $otaPort, $image) = split("\\|", $string, 4);
+
+    if ($image =~ m/^https?:\/\//i) {
+        my $target = "/tmp/.neato_bridge_ota.bin";
+        my $rc = system("curl -fsSL -o " . quotemeta($target) . " "
+                      . quotemeta($image) . " 2>/dev/null");
+        return "$name|could not download $image" if ($rc != 0);
+        $image = $target;
+    }
+
+    my $bad = NeatoLocal_CheckImage($image);
+    return "$name|$bad" if (defined($bad));
+
+    # Read it once: the checksum has to cover exactly the bytes that are sent.
+    my $fh;
+    return "$name|cannot open $image" if (!open($fh, "<", $image));
+    binmode($fh);
+    my $data = do { local $/; <$fh> };
+    close($fh);
+
+    my $size = length($data);
+    my $md5  = Digest::MD5::md5_hex($data);
+
+    # The device dials back, so we need a port for it to dial.
+    my $server = IO::Socket::INET->new(Listen => 1, LocalPort => 0,
+                                       Proto => "tcp", ReuseAddr => 1);
+    return "$name|cannot open a listening socket: $!" if (!$server);
+    my $hostPort = $server->sockport();
+
+    my $udp = IO::Socket::INET->new(PeerAddr => $ip, PeerPort => $otaPort,
+                                    Proto => "udp");
+    if (!$udp) {
+        close($server);
+        return "$name|cannot reach $ip:$otaPort: $!";
+    }
+
+    my $answer = "";
+    foreach my $try (1 .. 5) {
+        next if (!$udp->send("0 $hostPort $size $md5\n"));
+        next if (!IO::Select->new($udp)->can_read(3));
+        $udp->recv($answer, 128);
+        last if (length($answer));
+    }
+    close($udp);
+
+    if ($answer eq "") {
+        close($server);
+        return "$name|no answer to the update invitation on $ip:$otaPort. Is "
+             . "the bridge running, and does its firmware have OTA?";
+    }
+
+    $answer =~ s/^\s+|\s+$//g;
+    if ($answer =~ m/^AUTH/) {
+        close($server);
+        return "$name|the bridge wants an OTA password. This module sets none, "
+             . "so that image was not built from this project.";
+    }
+    if ($answer ne "OK") {
+        close($server);
+        return "$name|the bridge refused the update: $answer";
+    }
+
+    if (!IO::Select->new($server)->can_read(20)) {
+        close($server);
+        return "$name|the bridge took the invitation but never connected back";
+    }
+    my $client = $server->accept();
+    if (!$client) {
+        close($server);
+        return "$name|could not accept the bridge's connection: $!";
+    }
+
+    my $sent = 0;
+    my $reply = "";
+    my $select = IO::Select->new($client);
+
+    while ($sent < $size) {
+        my $wrote = syswrite($client, substr($data, $sent, 1024));
+        if (!defined($wrote) || $wrote <= 0) {
+            close($client); close($server);
+            return "$name|the connection broke after $sent of $size bytes";
+        }
+        $sent += $wrote;
+
+        # Drain the acknowledgements as they arrive. They are only byte counts,
+        # but left unread they fill the buffer and the transfer stalls.
+        while ($select->can_read(0)) {
+            my $buf = "";
+            my $got = sysread($client, $buf, 64);
+            last if (!defined($got) || $got == 0);
+            $reply .= $buf;
+        }
+    }
+
+    # The verdict comes after the last byte, and writing a megabyte to flash
+    # takes the bridge a moment.
+    #
+    # Reading until the verdict merely *appears* is not enough: the read window
+    # can cut the message in half, and then the reason the bridge gave is lost
+    # exactly when it is needed. So once something has arrived, the wait drops to
+    # a short quiet period and collects the rest.
+    my $deadline = time() + 90;
+    while (time() < $deadline) {
+        my $quiet = ($reply =~ m/OK|ERROR/i) ? 1 : 5;
+        last if (!$select->can_read($quiet));
+
+        my $buf = "";
+        my $got = sysread($client, $buf, 256);
+        last if (!defined($got) || $got == 0);
+        $reply .= $buf;
+    }
+    close($client);
+    close($server);
+
+    return "$name|OK|$sent bytes written, the bridge is restarting"
+        if ($reply =~ m/OK/);
+
+    $reply =~ s/^\d+//;      # strip the byte counters, keep the complaint
+    $reply =~ s/^\s+|\s+$//g;
+    return "$name|the bridge did not accept the image"
+         . ($reply ne "" ? ": $reply" : " and said nothing after the transfer");
+}
+
+sub NeatoLocal_OtaDone($) {
+    my ($string) = @_;
+    my ($name, $result, $detail) = split("\\|", $string, 3);
+    my $hash = $defs{$name};
+
+    return if (!defined($hash));
+    delete $hash->{helper}{flashRunning};
+    RemoveInternalTimer($hash, "NeatoLocal_FlashWatch");
+
+    $detail = "" if (!defined($detail));
+
+    if ($result eq "OK") {
+        Log3 $name, 3, "NeatoLocal ($name) - update over the air done: $detail";
+        readingsSingleUpdate($hash, "lastFlash", "ota ok: $detail", 1);
+    }
+    else {
+        Log3 $name, 1, "NeatoLocal ($name) - update over the air failed: $result";
+        readingsSingleUpdate($hash, "lastFlash", "ota: $result", 1);
+    }
+
+    return undef;
+}
+
 # Blocking.pm hands a worker's result back to FHEM as a single telnet line and
 # escapes only quotes and semicolons. A newline in the value therefore breaks
 # the command in half: the first part is incomplete Perl, every following line
@@ -1779,6 +2015,10 @@ sub NeatoLocal_FlashBlocking($) {
 
 sub NeatoLocal_ProvisionBlocking($) {
     return NeatoLocal_OneLine(NeatoLocal_ProvisionWork($_[0]));
+}
+
+sub NeatoLocal_OtaBlocking($) {
+    return NeatoLocal_OneLine(NeatoLocal_OtaWork($_[0]));
 }
 
 sub NeatoLocal_FlashWork($) {
@@ -2424,6 +2664,14 @@ sub NeatoLocal_LeaveTestMode($) {
         already flashed board over its USB port and reports the address it
         ends up with in the reading bridgeAddress. For a board that is being
         flashed anyway, flashESP does this in the same pass.</li>
+    <li><b>otaESP [&lt;ip&gt;] [&lt;image|url&gt;]</b> - updates an installed
+        bridge over the air, which is the only way once it is built into the
+        robot. Without an image the application this project publishes is
+        fetched -- the one without bootloader and partition table, because an
+        update is written into an app partition. The address is taken from the
+        device unless one is given. Every version of the bridge supports this,
+        so a board flashed long before this command existed can still be
+        updated.</li>
     <li><b>raw &lt;command&gt;</b> - sends an arbitrary console command</li>
     <li><b>reconnect</b> - reopens the connection</li>
   </ul><br>
@@ -2449,6 +2697,7 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>espPort</b> - the USB port the bridge board is on while it is being
         flashed, default /dev/ttyACM0</li>
     <li><b>espImage</b> - image flashESP writes instead of the one this project publishes</li>
+    <li><b>espAppImage</b> - application otaESP sends instead of the published one</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -2609,6 +2858,13 @@ sub NeatoLocal_LeaveTestMode($) {
         geflashten Board die Zugangsdaten ueber dessen USB-Port und meldet die
         Adresse, unter der es erreichbar wird, im Reading bridgeAddress. Wird
         ohnehin geflasht, erledigt flashESP das in einem Zug.</li>
+    <li><b>otaESP [&lt;IP&gt;] [&lt;Image|URL&gt;]</b> - aktualisiert eine
+        verbaute Bruecke ueber Funk, was der einzige Weg ist, sobald sie im
+        Roboter steckt. Ohne Angabe wird die Anwendung geholt, die dieses
+        Projekt veroeffentlicht -- die ohne Bootloader und Partitionstabelle,
+        denn ein Update landet in einer App-Partition. Die Adresse nimmt der
+        Befehl vom Geraet, wenn keine angegeben ist. Jede Version der Bruecke
+        kann das, ein lange vorher geflashtes Board also auch.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein beliebiges Konsolenkommando</li>
     <li><b>reconnect</b> - baut die Verbindung neu auf</li>
   </ul><br>
@@ -2638,6 +2894,7 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>espPort</b> - der USB-Port, an dem das Bruecken-Board beim Flashen
         haengt, Standard /dev/ttyACM0</li>
     <li><b>espImage</b> - Image, das flashESP statt des von diesem Projekt veroeffentlichten schreibt</li>
+    <li><b>espAppImage</b> - Anwendung, die otaESP statt der veroeffentlichten sendet</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,
