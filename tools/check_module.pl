@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 230;
+use Test::More tests => 231;
 
 package main;
 
@@ -403,8 +403,16 @@ is(ReadingsVal("nt", "uiState", ""), "UIMGR_STATE_CLEANINGCOMPLETE",
        "and is told device, port and image");
     is(ReadingsVal("fl", "lastFlash", ""), "running", "the run is visible as a reading");
 
-    like(NeatoLocal_Set($fh, "fl", "flashESP", "/tmp/neato.bin"), qr/already in progress/,
+    like(NeatoLocal_Set($fh, "fl", "flashESP", "/tmp/neato.bin"),
+         qr/has been going for/,
          "a second run is refused while one is going");
+
+    # A run that was killed must not lock the device for good: there is no way
+    # back from that except restarting FHEM.
+    @BLOCKING = ();
+    $fh->{helper}{flashRunning} = time() - 3600;
+    NeatoLocal_Set($fh, "fl", "flashESP", "/tmp/neato.bin");
+    is(scalar(@BLOCKING), 1, "a lock left behind by a killed run is not permanent");
 
     delete $fh->{helper}{flashRunning};
     @BLOCKING = ();

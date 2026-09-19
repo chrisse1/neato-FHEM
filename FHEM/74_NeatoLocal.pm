@@ -32,11 +32,16 @@ use strict;
 use warnings;
 use Time::HiRes qw(gettimeofday);
 
-my $NeatoLocal_VERSION = "0.12.1";
+my $NeatoLocal_VERSION = "0.12.2";
 
 # Where flashESP gets the image when nothing else is configured. The project's
 # CI builds it on every firmware change, and the text file beside it carries the
 # offset of the partition the credentials block goes to.
+# How long a flash or provisioning run may hold the device before the lock is
+# treated as left behind. Comfortably above the BlockingCall timeouts, so a run
+# that is merely slow is never cut short by it.
+my $NeatoLocal_flashLock = 600;
+
 my $NeatoLocal_imageURL =
     "https://raw.githubusercontent.com/chrisse1/neato-FHEM/main/"
   . "firmware/prebuilt/neato_bridge-esp32c3.bin";
@@ -1234,10 +1239,22 @@ sub NeatoLocal_Set($@) {
     }
 
     if ($cmd eq "flashESP" || $cmd eq "wifiESP") {
-        return "a flash or provisioning run is already in progress"
-            if ($hash->{helper}{flashRunning});
+        # The lock carries the time it was taken. A run that was killed -- by
+        # the timeout, by a FHEM restart, by anything -- would otherwise leave
+        # the device refusing every further attempt with no way back except
+        # restarting FHEM.
+        my $since = $hash->{helper}{flashRunning};
+        if ($since) {
+            my $age = time() - ($since =~ m/^\d+$/ ? $since : 0);
+            return "a flash or provisioning run has been going for $age s. "
+                 . "It is given up on after $NeatoLocal_flashLock s."
+                if ($age < $NeatoLocal_flashLock);
 
-        my $port = AttrVal($name, "espPort", "/dev/ttyACM0");
+            Log3 $name, 2, "NeatoLocal ($name) - the previous run left its lock "
+                         . "behind $age s ago; starting anyway";
+        }
+
+        my $port = NeatoLocal_EspPort($name);
 
         if ($cmd eq "flashESP") {
             # The bridge is powered by the robot, so it cannot be flashed while
@@ -1269,7 +1286,7 @@ sub NeatoLocal_Set($@) {
                      . "password at most 64";
             }
 
-            $hash->{helper}{flashRunning} = 1;
+            $hash->{helper}{flashRunning} = time();
             readingsSingleUpdate($hash, "lastFlash",
                                  defined($ssid)
                                  ? "running, with '$ssid' and a "
@@ -1283,7 +1300,7 @@ sub NeatoLocal_Set($@) {
             BlockingCall("NeatoLocal_FlashBlocking",
                          "$name|$port|$image|"
                        . (defined($ssid) ? "$ssid|$psk" : "|"),
-                         "NeatoLocal_FlashDone", 240,
+                         "NeatoLocal_FlashDone", 420,
                          "NeatoLocal_FlashAborted", $hash);
             return undef;
         }
@@ -1294,7 +1311,7 @@ sub NeatoLocal_Set($@) {
              . "Quote values containing spaces: wifiESP \"My WLAN\" \"secret\""
             if (!defined($ssid) || !defined($psk));
 
-        $hash->{helper}{flashRunning} = 1;
+        $hash->{helper}{flashRunning} = time();
 
         # What arrived here, not what was typed. Quoting, and whatever FHEM
         # does to a command line before a module sees it, can differ -- and a
@@ -1308,7 +1325,7 @@ sub NeatoLocal_Set($@) {
                            . " character password", 1);
 
         BlockingCall("NeatoLocal_ProvisionBlocking", "$name|$port|$ssid|$psk",
-                     "NeatoLocal_ProvisionDone", 150,
+                     "NeatoLocal_ProvisionDone", 300,
                      "NeatoLocal_FlashAborted", $hash);
         return undef;
     }
@@ -1563,19 +1580,34 @@ sub NeatoLocal_CheckImage($) {
 #
 # Runs inside BlockingCall only: it sleeps.
 sub NeatoLocal_AwaitBridge($;$) {
-    my ($port, $rounds) = @_;
-    $rounds = 18 if (!defined($rounds));
+    my ($port, $budget) = @_;
+    $budget = 180 if (!defined($budget));
 
+    my $deadline = time() + $budget;
     my $reply = "";
-    foreach my $attempt (1 .. $rounds) {
-        sleep(3);
-        next if (!-e $port);
+    my $answered = $port;
 
-        system("stty -F " . quotemeta($port) . " 115200 cs8 -cstopb -parenb "
+    while (time() < $deadline) {
+        sleep(3);
+
+        # esptool resets the board, and a board with native USB drops off the
+        # bus while it restarts. It does not have to come back under the same
+        # name -- so a port that stays missing is looked for rather than waited
+        # out, which is otherwise a full minute spent on a device that has
+        # simply been renumbered.
+        my $use = $port;
+        if (!-e $use) {
+            my $moved = NeatoLocal_FindEspPort();
+            next if (!defined($moved));
+            $use = $moved;
+        }
+
+        system("stty -F " . quotemeta($use) . " 115200 cs8 -cstopb -parenb "
              . "-crtscts -ixon -ixoff raw -echo >/dev/null 2>&1");
 
         my $fh;
-        next if (!open($fh, "+<", $port));
+        next if (!open($fh, "+<", $use));
+        $answered = $use;
 
         my $old = select($fh); $| = 1; select($old);
         print $fh "\ninfo\n";
@@ -1607,7 +1639,29 @@ sub NeatoLocal_AwaitBridge($;$) {
 
     $ip = undef if (defined($ip) && $ip eq "0.0.0.0");
 
-    return ($ip, $mode, $reply);
+    return ($ip, $mode, $reply, $answered);
+}
+
+# The board after a reset, when the configured port is gone. Only consulted in
+# that case, so a wrong guess cannot redirect a working setup.
+sub NeatoLocal_FindEspPort() {
+    my $ports = NeatoLocal_ScanSerialPorts();
+
+    foreach my $p (@$ports) {
+        return $p->{port} if ($p->{what} =~ m/^ESP32/);
+    }
+    return undef;
+}
+
+# Attribute values arrive with whatever whitespace was typed around them, and a
+# port name with a trailing space fails every -e test for a reason nobody can
+# see in a list output.
+sub NeatoLocal_EspPort($) {
+    my ($name) = @_;
+
+    my $port = AttrVal($name, "espPort", "/dev/ttyACM0");
+    $port =~ s/^\s+|\s+$//g;
+    return $port;
 }
 
 sub NeatoLocal_SlurpFile($) {
