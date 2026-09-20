@@ -455,6 +455,23 @@ python3 tools/render_track.py /opt/fhem/www/neato/Staubsauger-2026-09-20_11-59-1
 FHEM zeichnet nichts – das Modul schreibt die Daten, was sie darstellt,
 entscheidet für sich.
 
+#### Belege verrechnen statt Punkte malen
+
+Die Endpunkte allein verschenken das meiste, was ein Lidar sagt. Ein Strahl,
+der bei 3 m endet, hat zugleich festgestellt, dass der **ganze Weg dorthin
+frei** war. Genau daraus wird aus einer Punktwolke ein Grundriss: jede
+Rasterzelle sammelt Belege, und eine Zelle, die zweihundertmal durchquert und
+zweimal getroffen wurde, ist frei und keine Wand.
+
+Der Renderer tut das standardmäßig; `--points` zeichnet stattdessen die rohen
+Endpunkte, also den Zustand vor dem Verrechnen. Der Vergleich der beiden zeigt
+den Unterschied deutlicher als jede Beschreibung.
+
+Das Raster wächst dabei **nicht** mit der Datenmenge: 13 × 10 m sind bei 5 cm
+Zellen rund 52 000 Zellen, ob 14 000 oder 400 000 Punkte hineinfallen. Mehr
+Messungen machen es nicht größer, nur sicherer – der Grund, warum sich ein
+kleineres `mapInterval` lohnt, obwohl die Datei linear wächst.
+
 ### Explore und Persistent brauchen die App
 
 `startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des

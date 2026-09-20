@@ -64,6 +64,38 @@ def main():
     # A scan with nothing in it must not bring the measurement down.
     check(track_map.sharpness([]) is None, "no scans yields no number, not a zero")
 
+    # --- the grid, on a scan whose answer is known by construction ----------
+    # One beam, two metres straight ahead from the origin. Everything it
+    # crossed is free, and only where it stopped is there a wall.
+    one = [{"x": 0.0, "y": 0.0, "th": 0.0, "pts": [[0, 2000]]}]
+    grid = track_map.occupancy(one, cell=0.10)
+
+    check(grid.get((20, 0), [0, 0])[0] == 1, "the beam's end is counted as a hit")
+    check(grid.get((10, 0), [0, 0])[1] == 1, "and halfway there as a miss")
+    check(grid.get((20, 0), [0, 0])[1] == 0, "the endpoint is not also a miss")
+    check((25, 0) not in grid, "nothing is claimed beyond where the beam stopped")
+
+    walls, free = track_map.occupied(grid, seen=1)
+    check(walls == {(20, 0)}, "so exactly one cell counts as a wall")
+    check((10, 0) in free, "and the way there counts as free")
+
+    # Evidence, not the last word: a cell crossed often and hit once is free.
+    crossing = [{"x": 0.0, "y": 0.0, "th": 0.0, "pts": [[0, 2000]]}] * 20
+    stopping = [{"x": 0.0, "y": 0.0, "th": 0.0, "pts": [[0, 1000]]}]
+    mixed = track_map.occupancy(crossing + stopping, cell=0.10)
+    walls, free = track_map.occupied(mixed)
+    check((10, 0) in free and (10, 0) not in walls,
+          "a cell crossed twenty times and hit once is free, not a wall")
+    check((20, 0) in walls, "while the wall behind it stays a wall")
+
+    # The grid is bounded by the flat, not by how much was measured.
+    once = track_map.occupancy(scans, cell=0.10)
+    twice = track_map.occupancy(scans + scans, cell=0.10)
+    check(set(once) == set(twice),
+          "measuring twice as much does not make the grid bigger")
+    check(sum(sum(v) for v in twice.values()) == 2 * sum(sum(v) for v in once.values()),
+          "only more certain")
+
     # And the renderer runs end to end.
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "map.svg")
