@@ -32,6 +32,11 @@ jobs:
       - name: Check the over-the-air update
         run: perl tools/check_ota.pl
 
+      # Holds the session format and the coordinate convention against a real
+      # recording -- the convention is measured there, not asserted.
+      - name: Check the track and the map
+        run: python3 tools/check_track.py
+
   # One target, the same one the published image is built for. The ESP8266 is
   # gone: its single UART costs the console the sketch needs for setup and
   # diagnosis, and keeping a second platform alive meant a conditional at every

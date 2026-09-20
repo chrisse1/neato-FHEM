@@ -426,6 +426,35 @@ Der Scan liegt als [`docs/reference-scan-botvac-d6.txt`](docs/reference-scan-bot
 im Repo und die Tests laufen dagegen – samt seiner Ausreißer. Ein Filter, der
 nur an einem sauberen Scan geprüft wurde, beweist nichts.
 
+#### Punkte an ihren Platz rechnen
+
+Winkel und Entfernung gelten relativ zur Pose derselben Zeile. In
+Weltkoordinaten, beides in Grad und gegen den Uhrzeigersinn, Lidar-0° nach
+vorn:
+
+```
+x = pose.x + entfernung_m * cos(pose.th + winkel)
+y = pose.y + entfernung_m * sin(pose.th + winkel)
+```
+
+Diese Formel ist **gemessen, nicht angenommen**. Mehrere Scans sehen dieselbe
+Wand von verschiedenen Stellen; unter der richtigen Transformation fallen die
+Punkte aufeinander, unter einer falschen verschmieren sie. Von 96 geprüften
+Varianten ist diese die schärfste, mit 18 % Abstand zur zweitbesten – und die
+zweitbeste ist ihre Spiegelung, die in einer halbwegs symmetrischen Wohnung
+fast genauso ordentlich aussieht. Ohne Messung hätte man beide für richtig
+halten können.
+
+`tools/check_track.py` prüft genau das gegen eine echte Aufzeichnung,
+`tools/render_track.py` zeichnet eine Sitzung als SVG:
+
+```sh
+python3 tools/render_track.py /opt/fhem/www/neato/Staubsauger-2026-09-20_11-59-11.jsonl
+```
+
+FHEM zeichnet nichts – das Modul schreibt die Daten, was sie darstellt,
+entscheidet für sich.
+
 ### Explore und Persistent brauchen die App
 
 `startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des
@@ -637,11 +666,14 @@ Kommando anpassen.
 
 ```
 perl tools/check_module.pl    # Modul: Laden, Transporte, Parser, Zustandslogik
+perl tools/check_ota.pl       # Update über Funk, gegen einen Stellvertreter der Brücke
 python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
 python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über TCP
+python3 tools/check_track.py  # Sitzungsformat und Koordinatenkonvention
+python3 tools/check_partition.py  # Partitionstabelle des Images
 ```
 
-Alle drei laufen ohne FHEM-Installation und ohne Roboter. Die Testdaten sind
+Alle laufen ohne FHEM-Installation und ohne Roboter. Die Testdaten sind
 wörtliche Konsolenausgaben eines BotVac D6. Die CI führt sie bei jedem Push aus
 und übersetzt zusätzlich die Brücken-Firmware für den ESP32-C3.
 
