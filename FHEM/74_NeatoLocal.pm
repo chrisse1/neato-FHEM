@@ -38,7 +38,7 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.18.0";
+my $NeatoLocal_VERSION = "0.19.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -195,6 +195,7 @@ sub NeatoLocal_Initialize($) {
                       . "interval timeout connectTimeout espPort espImage "
                       . "espAppImage trackRuns:0,1 trackDir trackInterval "
                       . "trackKeepDays mapInterval mapMaxRange "
+                      . "trackPose:Smooth,Raw "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1212,11 +1213,12 @@ sub NeatoLocal_ParseScan($$$) {
     my $pts = join(",", map { "[$_->[0],$_->[1]]" } @$points);
 
     print $fh sprintf("{\"scan\":{\"x\":%.3f,\"y\":%.3f,\"th\":%.1f,"
-                    . "\"speed\":%.2f,\"pts\":[%s]}}\n",
+                    . "\"speed\":%.2f,\"pose\":\"%s\",\"pts\":[%s]}}\n",
                       defined($track->{lastX}) ? $track->{lastX} : 0,
                       defined($track->{lastY}) ? $track->{lastY} : 0,
                       defined($track->{lastTheta}) ? $track->{lastTheta} : 0,
-                      defined($speed) ? $speed : 0, $pts);
+                      defined($speed) ? $speed : 0,
+                      AttrVal($name, "trackPose", "Smooth"), $pts);
 
     $track->{scans}++;
     return undef;
@@ -1328,7 +1330,13 @@ sub NeatoLocal_TrackTimer($) {
     # The console is single file. A sample that queues behind a status request
     # would only push the queue along without being any fresher for it.
     if (!@{$hash->{helper}{queue}} && !defined($hash->{helper}{pending})) {
-        NeatoLocal_Enqueue($hash, "GetRobotPos Raw", \&NeatoLocal_TrackSample);
+        # Smooth, not Raw. Raw is the wheel encoders on their own, and over a
+        # run with this much turning it drifts -- which is what makes scans from
+        # different moments refuse to line up under any transformation.
+        my $which = AttrVal($name, "trackPose", "Smooth");
+        $which = "Smooth" if ($which !~ m/^(Smooth|Raw)$/);
+
+        NeatoLocal_Enqueue($hash, "GetRobotPos $which", \&NeatoLocal_TrackSample);
 
         # A scan is 360 rows and takes the console about half a second, so it
         # goes on its own schedule rather than with every pose. The pose is
@@ -1339,6 +1347,14 @@ sub NeatoLocal_TrackTimer($) {
             && time() - ($track->{lastScan} || 0) >= $every) {
             $track->{lastScan} = time();
             NeatoLocal_Enqueue($hash, "GetLDSScan", \&NeatoLocal_ParseScan);
+
+            # And the pose again right after it. A revolution takes 0.2 s, but
+            # between the two samples around it the robot turns 22 degrees on
+            # average -- at three metres that is over a metre of error. Storing
+            # both lets whoever draws the map see how stale the scan's pose is,
+            # instead of trusting it.
+            NeatoLocal_Enqueue($hash, "GetRobotPos $which",
+                               \&NeatoLocal_TrackSample);
         }
     }
 
@@ -3080,6 +3096,9 @@ sub NeatoLocal_LeaveTestMode($) {
         not draw it somewhere</li>
     <li><b>trackDir</b> - where the session files go, default ./www/neato</li>
     <li><b>trackInterval</b> - seconds between pose samples, default 3</li>
+    <li><b>trackPose</b> - which pose the track is built from: Smooth (the
+        default, the robot's corrected position) or Raw (the wheel encoders on
+        their own, which drift over a run)</li>
     <li><b>mapInterval</b> - seconds between lidar scans during a run, 0 (the
         default) records the track only. A scan is 360 rows and occupies the
         console for about half a second, so it goes on its own schedule</li>
@@ -3297,6 +3316,9 @@ sub NeatoLocal_LeaveTestMode($) {
         niemandem, der sie nirgends darstellt</li>
     <li><b>trackDir</b> - wohin die Sitzungsdateien gehen, Standard ./www/neato</li>
     <li><b>trackInterval</b> - Sekunden zwischen zwei Positionsabfragen, Standard 3</li>
+    <li><b>trackPose</b> - aus welcher Position die Spur entsteht: Smooth
+        (Standard, die korrigierte Position des Roboters) oder Raw (die
+        Radencoder allein, die ueber einen Lauf driften)</li>
     <li><b>mapInterval</b> - Sekunden zwischen zwei Lidar-Scans waehrend eines
         Laufs, 0 (Standard) zeichnet nur die Spur auf. Ein Scan sind 360 Zeilen
         und belegt die Konsole etwa eine halbe Sekunde, er laeuft daher nach

@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 300;
+use Test::More tests => 308;
 
 package main;
 
@@ -1154,4 +1154,60 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
 
     is(scalar(NeatoLocal_ParseLidar("Unknown Command")), undef,
        "something that is not a scan is refused");
+}
+
+# --- which pose the track is built from ------------------------------------
+# Raw is the wheel encoders on their own. Over a run with a lot of turning it
+# drifts, and scans from different moments then refuse to line up under any
+# transformation -- which is what a first attempt with Raw looked like.
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my ($ph, $pr) = mkdev("pos NeatoLocal 192.168.1.42:23");
+    $attr{"pos"}{trackDir} = $dir;
+    $attr{"pos"}{mapInterval} = 1;
+
+    NeatoLocal_TrackStart($ph);
+    $ph->{helper}{queue} = [];
+    delete $ph->{helper}{pending};
+    # TrackStart already took the first sample, including its scan slot.
+    delete $ph->{helper}{track}{lastScan};
+    @WRITTEN = ();
+
+    NeatoLocal_TrackTimer($ph);
+    my @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
+    @sent = map { my $c = $_; $c =~ s/\s+$//; $c } @sent;
+
+    is($sent[0], "GetRobotPos Smooth", "the corrected pose is the default");
+    is(scalar(grep { $_ eq "GetLDSScan" } @sent), 1, "a scan goes with it");
+    is(scalar(grep { $_ eq "GetRobotPos Smooth" } @sent), 2,
+       "and the pose twice, so the scan's staleness is visible");
+
+    # Order matters: a scan is only worth anything against the position it was
+    # measured from, so a pose has to come first.
+    my ($firstScan) = grep { $sent[$_] eq "GetLDSScan" } (0 .. $#sent);
+    ok($firstScan > 0, "the scan is not the first thing asked");
+    like($sent[$firstScan - 1], qr/GetRobotPos/, "a pose comes right before it");
+    like($sent[$firstScan + 1], qr/GetRobotPos/, "and right after it");
+
+    # Raw stays available for comparing the two.
+    $attr{"pos"}{trackPose} = "Raw";
+    $ph->{helper}{queue} = [];
+    delete $ph->{helper}{pending};
+    delete $ph->{helper}{track}{lastScan};
+    @WRITTEN = ();
+    NeatoLocal_TrackTimer($ph);
+    @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
+    like($sent[0], qr/GetRobotPos Raw/, "Raw can still be asked for");
+
+    # Anything else falls back rather than being sent to the robot.
+    $attr{"pos"}{trackPose} = "nonsense";
+    $ph->{helper}{queue} = [];
+    delete $ph->{helper}{pending};
+    @WRITTEN = ();
+    NeatoLocal_TrackTimer($ph);
+    @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
+    like($sent[0], qr/GetRobotPos Smooth/, "and a bad value does not reach it");
+
+    RemoveInternalTimer($ph, "NeatoLocal_TrackTimer");
+    NeatoLocal_TrackStop($ph);
 }
