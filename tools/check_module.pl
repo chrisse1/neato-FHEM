@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 289;
+use Test::More tests => 300;
 
 package main;
 
@@ -1105,4 +1105,53 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     ok(-e "$dir/swp-2019-01-01_10-00-00.jsonl", "even something ancient");
 
     NeatoLocal_TrackStop($sh2);
+}
+
+# --- the lidar, against a scan a real robot produced ------------------------
+# The fixture is a verbatim GetLDSScan taken while a D6 was cleaning. Its
+# invalid rows and its out-of-range readings are the reason it is kept: a filter
+# tested against a tidy scan proves nothing.
+{
+    my $body = do {
+        open(my $fh, "<", "docs/reference-scan-botvac-d6.txt")
+            or die "the reference scan is missing";
+        local $/;
+        <$fh>;
+    };
+
+    my ($points, $speed) = NeatoLocal_ParseLidar($body);
+    is($speed, 5.02, "the rotation speed is read");
+    is(scalar(@$points), 266, "266 of 360 rows are usable measurements");
+
+    my @bad = grep { $_->[1] <= 0 || $_->[1] > 6000 } @$points;
+    is(scalar(@bad), 0, "nothing at 0 mm and nothing beyond the lidar's reach");
+
+    # The nine rows around 16.8 m carry error code 0 -- the error code alone
+    # would have let them through.
+    my @far = grep { $_->[0] >= 233 && $_->[0] <= 240 } @$points;
+    is(scalar(@far), 0, "the 16.8 m artefacts are gone despite their clean code");
+
+    # And the good ones are still there, unchanged.
+    my ($first) = grep { $_->[0] == 0 } @$points;
+    is($first->[1], 1284, "a real measurement keeps its distance");
+    is($first->[2], 167, "and its intensity");
+
+    my @err = grep { $_->[0] == 14 || $_->[0] == 26 || $_->[0] == 133 } @$points;
+    is(scalar(@err), 0, "rows with an error code are dropped");
+
+    # A higher limit lets the artefacts back in -- which is what makes the
+    # limit, not the error code, the thing that keeps them out.
+    my ($wide) = NeatoLocal_ParseLidar($body, 20000);
+    is(scalar(@$wide), 275, "a wider range admits every row without an error");
+
+    # A docked robot: the lidar stands still and every row reads zero.
+    my $idle = "AngleInDegrees,DistInMM,Intensity,ErrorCodeHEX\n"
+             . join("", map { "$_,0,0,0\n" } (0 .. 359))
+             . "ROTATION_SPEED,0.00\n";
+    my ($none, $stopped) = NeatoLocal_ParseLidar($idle);
+    is(scalar(@$none), 0, "a lidar at rest yields no points");
+    is($stopped, 0, "and says so through its rotation speed");
+
+    is(scalar(NeatoLocal_ParseLidar("Unknown Command")), undef,
+       "something that is not a scan is refused");
 }

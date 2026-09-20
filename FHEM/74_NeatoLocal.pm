@@ -38,7 +38,7 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.17.0";
+my $NeatoLocal_VERSION = "0.18.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -194,7 +194,7 @@ sub NeatoLocal_Initialize($) {
     $hash->{AttrList} = "disable:0,1 disabledForIntervals "
                       . "interval timeout connectTimeout espPort espImage "
                       . "espAppImage trackRuns:0,1 trackDir trackInterval "
-                      . "trackKeepDays "
+                      . "trackKeepDays mapInterval mapMaxRange "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1149,6 +1149,79 @@ sub NeatoLocal_ParsePose($) {
 # the one thing here that cannot be taken back, so it is fenced in: only inside
 # the configured directory, only names this module writes itself, only older
 # than the cutoff, and never the session currently being recorded.
+# One lidar revolution, as GetLDSScan hands it over: 360 rows of angle,
+# distance in mm, intensity and an error code in hex, then the rotation speed.
+#
+# Two filters, and the second one is the one that is easy to miss: every row
+# carrying an error code reads 0 mm, so dropping those is obvious -- but in a
+# real scan nine rows came back around 16.8 m with error code 0, in runs, where
+# nothing returned the beam. The lidar of a Botvac reaches about five metres, so
+# anything past that is not a measurement. A filter written against a tidy scan
+# would have put those straight into the map.
+sub NeatoLocal_ParseLidar($;$) {
+    my ($body, $maxRange) = @_;
+
+    return (undef, undef) if (!defined($body));
+    $maxRange = 6000 if (!defined($maxRange) || $maxRange !~ m/^\d+$/);
+
+    my @points;
+    my $speed;
+    my $rows = 0;
+
+    foreach my $line (split(/\r?\n/, $body)) {
+        if ($line =~ m/^ROTATION_SPEED,\s*([\d.]+)/) {
+            $speed = $1 + 0;
+            next;
+        }
+        next if ($line !~ m/^(\d+),(-?\d+),(-?\d+),([0-9a-fA-F]+)\s*$/);
+
+        my ($angle, $dist, $intensity, $err) = ($1 + 0, $2 + 0, $3 + 0, $4);
+        $rows++;
+
+        next if (hex($err) != 0);
+        next if ($dist <= 0 || $dist > $maxRange);
+
+        push @points, [$angle, $dist, $intensity];
+    }
+
+    return (undef, undef) if (!$rows);
+    return (\@points, $speed);
+}
+
+sub NeatoLocal_ParseScan($$$) {
+    my ($hash, $entry, $body) = @_;
+    my $name = $hash->{NAME};
+
+    my $track = $hash->{helper}{track};
+    return undef if (!$track);
+
+    my ($points, $speed) =
+        NeatoLocal_ParseLidar($body, AttrVal($name, "mapMaxRange", 6000));
+    return undef if (!defined($points));
+
+    # A lidar that is not turning measures nothing. It only spins on its own
+    # during a run -- switching it on by hand needs TestMode, and in TestMode the
+    # robot neither cleans nor obeys its buttons, so that is not done here.
+    if (!@$points) {
+        Log3 $name, 4, "NeatoLocal ($name) - lidar returned nothing usable"
+                     . (defined($speed) ? ", rotation $speed" : "");
+        return undef;
+    }
+
+    my $fh = $track->{fh};
+    my $pts = join(",", map { "[$_->[0],$_->[1]]" } @$points);
+
+    print $fh sprintf("{\"scan\":{\"x\":%.3f,\"y\":%.3f,\"th\":%.1f,"
+                    . "\"speed\":%.2f,\"pts\":[%s]}}\n",
+                      defined($track->{lastX}) ? $track->{lastX} : 0,
+                      defined($track->{lastY}) ? $track->{lastY} : 0,
+                      defined($track->{lastTheta}) ? $track->{lastTheta} : 0,
+                      defined($speed) ? $speed : 0, $pts);
+
+    $track->{scans}++;
+    return undef;
+}
+
 sub NeatoLocal_TrackSweep($;$) {
     my ($hash, $now) = @_;
     my $name = $hash->{NAME};
@@ -1254,8 +1327,20 @@ sub NeatoLocal_TrackTimer($) {
 
     # The console is single file. A sample that queues behind a status request
     # would only push the queue along without being any fresher for it.
-    NeatoLocal_Enqueue($hash, "GetRobotPos Raw", \&NeatoLocal_TrackSample)
-        if (!@{$hash->{helper}{queue}} && !defined($hash->{helper}{pending}));
+    if (!@{$hash->{helper}{queue}} && !defined($hash->{helper}{pending})) {
+        NeatoLocal_Enqueue($hash, "GetRobotPos Raw", \&NeatoLocal_TrackSample);
+
+        # A scan is 360 rows and takes the console about half a second, so it
+        # goes on its own schedule rather than with every pose. The pose is
+        # asked first: the points are only worth anything against the position
+        # they were measured from.
+        my $every = AttrVal($name, "mapInterval", 0);
+        if ($every =~ m/^\d+$/ && $every > 0
+            && time() - ($track->{lastScan} || 0) >= $every) {
+            $track->{lastScan} = time();
+            NeatoLocal_Enqueue($hash, "GetLDSScan", \&NeatoLocal_ParseScan);
+        }
+    }
 
     my $every = AttrVal($name, "trackInterval", 3);
     $every = 1 if ($every < 1);
@@ -1308,10 +1393,10 @@ sub NeatoLocal_TrackStop($) {
     my $seconds = time() - $track->{since};
     my $fh = $track->{fh};
 
-    print $fh sprintf("{\"summary\":{\"points\":%d,\"distance\":%.1f,"
-                    . "\"rotation\":%.0f,\"seconds\":%d}}\n",
-                      $track->{points}, $track->{distance},
-                      $track->{rotation}, $seconds);
+    print $fh sprintf("{\"summary\":{\"points\":%d,\"scans\":%d,"
+                    . "\"distance\":%.1f,\"rotation\":%.0f,\"seconds\":%d}}\n",
+                      $track->{points}, $track->{scans} || 0,
+                      $track->{distance}, $track->{rotation}, $seconds);
     close($fh);
 
     Log3 $name, 3, "NeatoLocal ($name) - track finished: $track->{points} "
@@ -1321,6 +1406,7 @@ sub NeatoLocal_TrackStop($) {
     readingsBulkUpdate($hash, "trackPoints", $track->{points});
     readingsBulkUpdate($hash, "trackDistance", sprintf("%.1f", $track->{distance}));
     readingsBulkUpdate($hash, "trackDuration", $seconds);
+    readingsBulkUpdate($hash, "trackScans", $track->{scans} || 0);
     readingsEndUpdate($hash, 1);
 
     # Right after a run: a new file exists, the robot is on its dock and nothing
@@ -2994,6 +3080,13 @@ sub NeatoLocal_LeaveTestMode($) {
         not draw it somewhere</li>
     <li><b>trackDir</b> - where the session files go, default ./www/neato</li>
     <li><b>trackInterval</b> - seconds between pose samples, default 3</li>
+    <li><b>mapInterval</b> - seconds between lidar scans during a run, 0 (the
+        default) records the track only. A scan is 360 rows and occupies the
+        console for about half a second, so it goes on its own schedule</li>
+    <li><b>mapMaxRange</b> - millimetres past which a reading is not a
+        measurement, default 6000. Needed on top of the error code: real scans
+        contain readings around 16.8 m with a clean error code, where nothing
+        returned the beam</li>
     <li><b>trackKeepDays</b> - how long finished sessions are kept, default 14.
         Swept after each run; 0 keeps them for good. Only files this device
         wrote itself are ever removed</li>
@@ -3204,6 +3297,14 @@ sub NeatoLocal_LeaveTestMode($) {
         niemandem, der sie nirgends darstellt</li>
     <li><b>trackDir</b> - wohin die Sitzungsdateien gehen, Standard ./www/neato</li>
     <li><b>trackInterval</b> - Sekunden zwischen zwei Positionsabfragen, Standard 3</li>
+    <li><b>mapInterval</b> - Sekunden zwischen zwei Lidar-Scans waehrend eines
+        Laufs, 0 (Standard) zeichnet nur die Spur auf. Ein Scan sind 360 Zeilen
+        und belegt die Konsole etwa eine halbe Sekunde, er laeuft daher nach
+        eigenem Takt</li>
+    <li><b>mapMaxRange</b> - ab wie vielen Millimetern ein Wert keine Messung
+        mehr ist, Standard 6000. Zusaetzlich zum Fehlercode noetig: echte Scans
+        enthalten Werte um 16,8 m mit Fehlercode 0, dort wo nichts
+        zurueckgestrahlt hat</li>
     <li><b>trackKeepDays</b> - wie lange fertige Sitzungen bleiben, Standard 14.
         Aufgeraeumt wird nach jedem Lauf; 0 behaelt alles. Entfernt werden nur
         Dateien, die dieses Geraet selbst geschrieben hat</li>

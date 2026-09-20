@@ -395,6 +395,37 @@ Muster `<Gerät>-<Zeitstempel>.jsonl`, nur älter als die Grenze – und nie die
 Sitzung, die gerade geschrieben wird. Eigene Dateien im selben Verzeichnis und
 Sitzungen eines anderen Geräts bleiben unangetastet.
 
+### Aus der Spur eine Karte machen
+
+Der Lidar dreht **während eines Laufs von allein** – gemessen an einem D6:
+`ROTATION_SPEED 5.02`, echte Distanzen. Im Leerlauf steht er, und einschalten
+ließe sich er nur mit `SetLDSRotation`, das laut Roboterhilfe „can only be run
+in TestMode" – und in TestMode reinigt der Roboter nicht und reagiert nicht auf
+seine Tasten. Während der Reinigung ist der Scan also gratis zu haben, im
+Leerlauf nicht zu bezahlen.
+
+`mapInterval` (Standard 0 = aus) holt daher alle *n* Sekunden einen
+`GetLDSScan` und legt ihn neben die Spur:
+
+```json
+{"scan":{"x":1.204,"y":0.418,"th":92.0,"speed":5.02,"pts":[[0,1284],[1,1266]]}}
+```
+
+Winkel in Grad, Distanz in Millimetern, jeweils relativ zur Pose derselben
+Zeile. Wer die Punkte mit `x`, `y` und `th` zusammenrechnet, bekommt über den
+Lauf hinweg einen Grundriss statt nur einer Linie.
+
+**Zwei Filter, und der zweite ist der, den man leicht übersieht.** Jede Zeile
+mit Fehlercode meldet 0 mm – die wegzulassen ist naheliegend. In einem echten
+Scan kamen aber neun Zeilen mit **Fehlercode 0** und rund **16,8 m** zurück, in
+zusammenhängenden Läufen, dort wo nichts zurückgestrahlt hat. Der Lidar eines
+Botvac reicht etwa fünf Meter; alles darüber ist keine Messung. `mapMaxRange`
+(Standard 6000 mm) fängt das ab.
+
+Der Scan liegt als [`docs/reference-scan-botvac-d6.txt`](docs/reference-scan-botvac-d6.txt)
+im Repo und die Tests laufen dagegen – samt seiner Ausreißer. Ein Filter, der
+nur an einem sauberen Scan geprüft wurde, beweist nichts.
+
 ### Explore und Persistent brauchen die App
 
 `startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des
