@@ -141,7 +141,12 @@ einen Grundriss, und den rechnet **das Modul**, nicht die Anzeige:
   laufenden Sitzung – die Komponente kann ihn binden, statt ihn als Attribut
   eingetragen zu bekommen
 * dazu `planCells` (wie viele Zellen), `planRuns` (wie viele Aufzeichnungen
-  eingegangen sind) und `planState` (`ok`, `ok, 1 did not fit`, `failed: …`)
+  eingegangen sind) und `planState` (`ok`, `ok, 1 did not fit (0.33)`,
+  `failed: …`) – die Zahl in Klammern ist die Güte, mit der der ausgelassene
+  Lauf eingepasst worden wäre
+* die Güte **aller** Läufe steht im Feld `scores` der Plandatei; die Anzeige
+  braucht es nicht, es ist Beweissicherung für die Frage, ob die Schwelle von
+  0,45 an der richtigen Stelle liegt
 * gerechnet wird auf `set <Gerät> buildPlan` oder, mit `attr <Gerät> planAuto 1`,
   nach jeder Reinigung
 

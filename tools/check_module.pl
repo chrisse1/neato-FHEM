@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 346;
+use Test::More tests => 352;
 
 package main;
 
@@ -1272,14 +1272,27 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
        "and both attributes reach the worker");
 
     # What comes back.
-    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4|1|97");
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4|0.33|97");
     is(ReadingsVal("plan", "planFile", ""), "$dir/plan-plan.json",
        "the file is announced as a reading, so a panel can bind it");
     is(ReadingsVal("plan", "planCells", ""), 1816, "with how many cells it has");
     is(ReadingsVal("plan", "planRuns", ""), 4, "and how many runs went in");
-    like(ReadingsVal("plan", "planState", ""), qr/^ok, 1 did not fit/,
-         "a run that did not fit is said out loud, not swallowed");
     ok(!$plh->{helper}{planRunning}, "and the lock is released");
+
+    # The grade a dropped run reached, not just that one was dropped. The
+    # threshold it was measured against is an assumption, and 0.44 says
+    # something quite different from 0.05 about whether it is in the right
+    # place. Without the number a lost run looks like nothing at all.
+    is(ReadingsVal("plan", "planState", ""), "ok, 1 did not fit (0.33)",
+       "a run that did not fit is said out loud, with the grade it got");
+
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4||97");
+    is(ReadingsVal("plan", "planState", ""), "ok",
+       "and nothing dropped stays plain ok");
+
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|2|0.41,0.33|97");
+    is(ReadingsVal("plan", "planState", ""), "ok, 2 did not fit (0.41, 0.33)",
+       "several of them are all named, worst last");
 
     $plh->{helper}{planRunning} = time();
     NeatoLocal_PlanDone("plan|no recordings of plan in $dir");
@@ -1360,6 +1373,10 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     ok(ref($written) eq "HASH", "what was written is JSON") or diag($@);
     is($written->{runs}, 1, "with the number of runs the component needs");
     is($written->{cell}, 0.1, "and the cell size, so both sides use the same one");
+    is(scalar(@{ $written->{scores} }), 1, "the grade of every run that was offered");
+    is($written->{scores}[0]{score}, 1, "the frame run scores 1 by definition");
+    ok($written->{scores}[0]{used}, "and it is in the plan");
+    is($written->{scores}[0]{file}, "w-2026-09-20_10-00-00.jsonl", "named by its file");
     is(scalar(@{ $written->{cells} }), $cells, "and every cell that was counted");
     is(scalar(@{ $written->{cells}[0] }), 4, "each one as [ix, iy, walls, seen]");
     ok($written->{cells}[0][0] == int($written->{cells}[0][0]),

@@ -97,14 +97,19 @@ for my $rejected (@{ $plan->{rejected} }) {
                 $used[$rejected->{index}], $rejected->{score} * 100));
 }
 
-my @files = map { $used[$_->{index}] } @{ $plan->{placements} };
 my @stamp = gmtime(time);
 my $built = sprintf("%04d-%02d-%02dT%02d:%02d:%02d.000Z",
                     $stamp[5] + 1900, $stamp[4] + 1, $stamp[3], $stamp[2], $stamp[1], $stamp[0]);
-my $body = NeatoLocalPlan::as_json($plan, \@files, $built);
+my $body = NeatoLocalPlan::as_json($plan, \@used, $built);
 
 open(my $fh, ">", $out) or die("$out: $!\n");
 print $fh $body;
 close($fh);
 
-say(sprintf("%s: %.0f kB\n", $out, length($body) / 1024));
+say("\nGuete je Lauf:\n");
+for my $entry (@{ NeatoLocalPlan::scores_of($plan, \@used) }) {
+    say(sprintf("  %.2f  %s  %s\n", $entry->{score},
+                $entry->{used} ? "dabei    " : "abgelehnt", $entry->{file}));
+}
+
+say(sprintf("\n%s: %.0f kB\n", $out, length($body) / 1024));

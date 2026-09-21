@@ -216,6 +216,43 @@ if (scalar(@plain)) {
     ok($plan->{runs} == 3, "alle drei Laeufe passen in einen Rahmen");
     ok(!scalar(@{ $plan->{rejected} }), "keiner wird abgelehnt");
 
+    # Die Guete je Lauf: nicht die Anzeige braucht sie, sondern die Frage, ob
+    # die Schwelle von 0,45 an der richtigen Stelle liegt. Sie ist eine Annahme
+    # und keine Messung, und dies ist die einzige Stelle, an der sich die
+    # Zahlen sammeln, die das entscheiden koennten.
+    my $scores = NeatoLocalPlan::scores_of($plan, \@names);
+    ok(scalar(@$scores) == 3, "jeder angebotene Lauf bekommt eine Guete, nicht nur die genommenen");
+    ok($scores->[0]{score} == 1 && $scores->[0]{used},
+       "der Rahmenlauf steht mit 1,0 dabei -- an ihm wird gemessen");
+    ok($scores->[0]{score} >= $scores->[1]{score}
+       && $scores->[1]{score} >= $scores->[2]{score}, "absteigend sortiert");
+    ok(!grep({ !defined($_->{file}) || $_->{file} !~ m/\.jsonl$/ } @$scores),
+       "und jede nennt ihre Datei");
+    printf("       Guete: %s\n",
+           join(", ", map { sprintf("%.2f %s", $_->{score}, $_->{used} ? "dabei" : "abgelehnt") }
+                      @$scores));
+
+    # Ein Lauf, der es nicht schafft, muss in der Liste auftauchen und dort als
+    # abgelehnt markiert sein -- sonst sieht ein verlorener Lauf nach nichts
+    # aus ausser einem kleineren planRuns als erwartet.
+    {
+        my @lanes;
+        for my $lane (0, 3, 6) {
+            push(@lanes, $_ * 0.1, $lane) for (0 .. 60);
+        }
+        my @tight;
+        for my $lane (0, 1, 2) {
+            push(@tight, $_ * 0.1, $lane) for (0 .. 50);
+        }
+        my $mixed = NeatoLocalPlan::merge_plan([ { walls => \@tight, free => [] },
+                                                 { walls => \@lanes, free => [] } ]);
+        my $both = NeatoLocalPlan::scores_of($mixed, [ "breit.jsonl", "eng.jsonl" ]);
+        ok(scalar(@$both) == 2, "auch der abgelehnte Lauf steht in der Liste");
+        ok($both->[1]{used} == 0 && $both->[1]{score} < $NeatoLocalPlan::DEFAULTS{accept},
+           sprintf("als abgelehnt, mit der Guete, die er erreicht hat (%.2f)",
+                   $both->[1]{score}));
+    }
+
     # Through the writer and back, so the file format is checked too, not just
     # the arithmetic behind it.
     $mine = inspect(JSON::PP->new->decode(

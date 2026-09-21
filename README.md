@@ -507,8 +507,30 @@ FHEM selbst hält nichts an. Wer es kürzer braucht, nimmt weniger
 `planSources`.
 
 Läufe, die nicht passen, werden **abgelehnt** statt hineingezwungen – eine
-andere Etage in denselben Rahmen zu pressen zieht Wände quer durch Räume. Das
-Reading `planState` sagt, wenn einer aussortiert wurde.
+andere Etage in denselben Rahmen zu pressen zieht Wände quer durch Räume.
+
+```
+planState   ok
+            ok, 1 did not fit (0.33)
+            ok, 2 did not fit (0.41, 0.33)
+            failed: <Grund>
+```
+
+Die Zahl in Klammern ist die erreichte Güte. **Dieses Reading lohnt sich
+mitzuloggen:** die Schwelle, unter der ein Lauf verworfen wird (0,45), ist eine
+Annahme und keine Messung, und die Belege widersprechen sich noch – drei echte
+Läufe derselben Wohnung kamen auf 0,64 bis 1,0, ein Teillauf gegen einen vollen
+aber auf 0,33. Über ein paar Wochen ist `planState` die Reihe, die das
+entscheidet. Ein `0.44`, das durchfiel, sagt etwas ganz anderes als ein `0.05`.
+
+Dieselben Zahlen stehen für alle Läufe im Feld `scores` der Plandatei:
+
+```json
+"scores": [
+  { "file": "Staubsauger-2026-09-21_10-00-19.jsonl", "score": 1,    "used": true  },
+  { "file": "Staubsauger-2026-09-20_11-00-10.jsonl", "score": 0.33, "used": false }
+]
+```
 
 Von Hand, ohne FHEM, geht dasselbe mit
 

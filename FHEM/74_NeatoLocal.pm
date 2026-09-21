@@ -38,7 +38,7 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.20.0";
+my $NeatoLocal_VERSION = "0.21.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -2484,19 +2484,25 @@ sub NeatoLocal_PlanWork($) {
     my $built = sprintf("%04d-%02d-%02dT%02d:%02d:%02d.000Z",
                         $stamp[5] + 1900, $stamp[4] + 1, $stamp[3],
                         $stamp[2], $stamp[1], $stamp[0]);
-    my @files = map { $used[$_->{index}] } @{ $plan->{placements} };
 
     my $fh;
     open($fh, ">", "$out.new") or return "$name|$out cannot be written: $!";
-    print $fh NeatoLocalPlan::as_json($plan, \@files, $built);
+    print $fh NeatoLocalPlan::as_json($plan, \@used, $built);
     close($fh);
     # Into place in one step: a panel polling the file must never catch it
     # half written.
     rename("$out.new", $out) or return "$name|$out cannot be replaced: $!";
 
-    return sprintf("%s|OK|%s|%d|%d|%d|%d", $name, $out,
+    # The grades of the runs that were left out travel back rather than just
+    # their number. The threshold they were measured against is an assumption,
+    # and a run that is quietly dropped shows up as nothing but a smaller
+    # planRuns than expected.
+    my @dropped = sort { $b <=> $a } map { $_->{score} } @{ $plan->{rejected} };
+
+    return sprintf("%s|OK|%s|%d|%d|%s|%d", $name, $out,
                    scalar(@{ $plan->{cells} }), $plan->{runs},
-                   scalar(@{ $plan->{rejected} }), time() - $started);
+                   join(",", map { sprintf("%.2f", $_) } @dropped),
+                   time() - $started);
 }
 
 # Start a plan run, from "set buildPlan" or after a cleaning run.
@@ -2543,7 +2549,7 @@ sub NeatoLocal_PlanStart($$) {
 
 sub NeatoLocal_PlanDone($) {
     my ($string) = @_;
-    my ($name, $result, $file, $cells, $runs, $rejected, $seconds)
+    my ($name, $result, $file, $cells, $runs, $dropped, $seconds)
         = split("\\|", $string, 7);
     my $hash = $defs{$name};
 
@@ -2557,16 +2563,25 @@ sub NeatoLocal_PlanDone($) {
         return undef;
     }
 
+    # With the grades, not just the count: the threshold a run was measured
+    # against is an assumption, and these numbers are what would settle it. A
+    # 0.44 that was dropped says something quite different from a 0.05.
+    my @scores = grep { length($_) } split(/,/, defined($dropped) ? $dropped : "");
+    my $state = "ok";
+    $state .= sprintf(", %d did not fit (%s)", scalar(@scores), join(", ", @scores))
+        if (scalar(@scores));
+
     Log3 $name, 3, "NeatoLocal ($name) - plan written to $file: $cells cells "
                  . "from $runs recordings"
-                 . ($rejected ? ", $rejected did not fit" : "")
+                 . (scalar(@scores) ? ", " . scalar(@scores) . " did not fit: "
+                                    . join(", ", @scores) : "")
                  . ", ${seconds}s";
 
     readingsBeginUpdate($hash);
     readingsBulkUpdate($hash, "planFile", $file);
     readingsBulkUpdate($hash, "planCells", $cells);
     readingsBulkUpdate($hash, "planRuns", $runs);
-    readingsBulkUpdate($hash, "planState", $rejected ? "ok, $rejected did not fit" : "ok");
+    readingsBulkUpdate($hash, "planState", $state);
     readingsEndUpdate($hash, 1);
 
     return undef;
@@ -3213,7 +3228,13 @@ sub NeatoLocal_LeaveTestMode($) {
         writes it as plan-&lt;device&gt;.json beside them. Runs in a forked,
         niced process and takes minutes; the reading <b>planFile</b> names the
         result. Needs recordings with lidar scans, so trackRuns and
-        mapInterval have to be set.</li>
+        mapInterval have to be set.<br>
+        <b>planState</b> carries the grade of every run that was left out, for
+        instance "ok, 1 did not fit (0.33)". The threshold a run is measured
+        against is an assumption and not a measurement, so it is worth logging
+        this reading: over a few weeks it is the series that says whether the
+        threshold sits in the right place. The file itself carries the grades
+        of all runs in its "scores" field.</li>
     <li><b>statusRequest</b> - polls charger, error and motor state</li>
     <li><b>testMode &lt;on|off&gt;</b> - enters/leaves the console test mode.
         <b>While test mode is on the robot ignores its own buttons and will
@@ -3443,7 +3464,13 @@ sub NeatoLocal_LeaveTestMode($) {
         gemeinsamen Grundriss und legt ihn als plan-&lt;Geraet&gt;.json daneben.
         Laeuft in einem eigenen, heruntergestuften Prozess und dauert Minuten;
         das Reading <b>planFile</b> nennt das Ergebnis. Braucht Aufzeichnungen
-        mit Lidar-Scans, also trackRuns und mapInterval.</li>
+        mit Lidar-Scans, also trackRuns und mapInterval.<br>
+        <b>planState</b> nennt die Guete jedes ausgelassenen Laufs, etwa
+        "ok, 1 did not fit (0.33)". Die Schwelle, an der gemessen wird, ist
+        eine Annahme und keine Messung -- dieses Reading mitzuloggen lohnt sich
+        also: ueber ein paar Wochen ist es die Reihe, die sagt, ob die Schwelle
+        richtig liegt. Die Datei selbst traegt die Guete aller Laeufe im Feld
+        "scores".</li>
     <li><b>statusRequest</b> - fragt Ladezustand, Fehler und Motoren ab</li>
     <li><b>testMode &lt;on|off&gt;</b> - schaltet den Testmodus der Konsole.
         <b>Im Testmodus reagiert der Roboter nicht mehr auf seine Tasten und

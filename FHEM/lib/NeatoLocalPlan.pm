@@ -713,20 +713,72 @@ sub merge_plan {
              cell => $s->{cell}, runs => scalar(@placements) };
 }
 
+# How well each offered run sits in the frame, best first.
+#
+# All of them, not just the ones that made it: the threshold below which a run
+# is dropped is an assumption and not a measurement, and this list is the only
+# place the numbers that would settle it can collect. The frame run scores 1 by
+# definition -- it is what the others are measured against.
+#
+# $names is indexed the same way the surveys were, so placements and rejects
+# can both name their file.
+sub scores_of {
+    my ($plan, $names) = @_;
+    my @scores;
+
+    for my $placement (@{ $plan->{placements} }) {
+        push(@scores, { file  => $names->[$placement->{index}],
+                        score => $placement->{score},
+                        used  => 1 });
+    }
+    for my $rejected (@{ $plan->{rejected} }) {
+        push(@scores, { file  => $names->[$rejected->{index}],
+                        score => $rejected->{score},
+                        used  => 0 });
+    }
+
+    return [ sort { $b->{score} <=> $a->{score} } @scores ];
+}
+
 # The plan as the JSON the component reads. Cell indices, not metres.
+#
+# $names is every run that was offered, indexed as the surveys were. "files"
+# names the ones that went in, in the order they were fitted -- the first is
+# the frame; "scores" names all of them with the grade each one got.
 sub as_json {
-    my ($plan, $files, $built) = @_;
+    my ($plan, $names, $built) = @_;
     my @cells = map { "[$_->{ix},$_->{iy},$_->{walls},$_->{seen}]" } @{ $plan->{cells} };
     my @parts = (
         sprintf('"cell":%s', _number($plan->{cell})),
         sprintf('"runs":%d', $plan->{runs}),
     );
     push(@parts, sprintf('"built":"%s"', $built)) if (defined($built));
-    push(@parts, '"files":[' . join(",", map { '"' . _escape($_) . '"' } @$files) . ']')
-        if (defined($files));
+
+    if (defined($names)) {
+        my @files = map { '"' . _escape($names->[$_->{index}]) . '"' }
+                    @{ $plan->{placements} };
+        push(@parts, '"files":[' . join(",", @files) . ']');
+
+        my @scores = map {
+            sprintf('{"file":"%s","score":%s,"used":%s}',
+                    _escape($_->{file}), _score($_->{score}), $_->{used} ? "true" : "false")
+        } @{ scores_of($plan, $names) };
+        push(@parts, '"scores":[' . join(",", @scores) . ']') if (scalar(@scores));
+    }
+
     push(@parts, '"cells":[' . join(",", @cells) . ']');
 
     return "{" . join(",", @parts) . "}\n";
+}
+
+# A grade as a JSON number: three decimals, without the trailing zeros that
+# would only make the file longer. 1.000 becomes 1, 0.330 becomes 0.33.
+sub _score {
+    my ($value) = @_;
+    my $text = sprintf("%.3f", $value);
+    $text =~ s/0+$// if ($text =~ m/\./);
+    $text =~ s/\.$//;
+    return $text;
 }
 
 sub _number {
