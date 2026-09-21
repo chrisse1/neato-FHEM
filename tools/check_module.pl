@@ -69,11 +69,18 @@ ok(defined($init{DefFn}) && defined($init{ReadFn}) && defined($init{SetFn}),
 like($init{AttrList}, qr/cmdSendToBase/, "AttrList contains the command mapping attributes");
 
 # --- helper: build a device ------------------------------------------------
+# Session files land in trackDir, which defaults to ./www/neato -- inside the
+# working copy. Every device gets a scratch directory instead, so a test that
+# starts a run cannot leave files behind in the repository.
+use File::Temp qw(tempdir);
+my $SCRATCH = tempdir(CLEANUP => 1);
+
 sub mkdev {
     my ($def) = @_;
     my ($name) = split(" ", $def);          # FHEM names the device in the DEF
     my $hash = { NAME => $name, STATE => "opened" };
     $defs{$name} = $hash;
+    $attr{$name}{trackDir} = $SCRATCH;
     my $ret = NeatoLocal_Define($hash, $def);
     return ($hash, $ret);
 }

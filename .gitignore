@@ -2,4 +2,4 @@ __pycache__/
 *.pyc
 .check_dump_tmp/
 neato-dump.txt
-__pycache__/
+www/neato/
