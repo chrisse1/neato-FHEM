@@ -122,6 +122,7 @@ Es kann immer nur ein Prozess den Port offen haben – ein laufendes
 | `button <name>` | beliebigen Tastendruck simulieren |
 | `flashESP [<image>]` | Brücken-Firmware auf ein Board am USB-Port schreiben |
 | `wifiESP <ssid> <passwort>` | einem frisch geflashten Board die WLAN-Zugangsdaten übergeben |
+| `buildPlan` | aus den letzten Aufzeichnungen einen gemeinsamen Grundriss rechnen |
 | `statusRequest` | Zustand sofort abfragen |
 | `reconnect` | Verbindung neu aufbauen |
 | `testMode on\|off` | Diagnosemodus der Konsole, siehe unten |
@@ -472,6 +473,49 @@ Zellen rund 52 000 Zellen, ob 14 000 oder 400 000 Punkte hineinfallen. Mehr
 Messungen machen es nicht größer, nur sicherer – der Grund, warum sich ein
 kleineres `mapInterval` lohnt, obwohl die Datei linear wächst.
 
+### Aus mehreren Läufen ein Grundriss
+
+Ein einzelner Lauf ist die Karte *dieses Laufs*, nicht der Wohnung: eigener
+Nullpunkt, eigene Nordrichtung, und nur die Räume, in die der Roboter an dem
+Tag kam. Mehrere übereinandergelegt können zweierlei, was keiner allein kann –
+fehlende Wände ergänzen und über jede Zelle abstimmen lassen. Was drei von vier
+Läufen Wand nennen, ist eine Wand; was einer Wand nennt, während die anderen an
+dieselbe Stelle sahen und Boden fanden, war der Wäscheständer.
+
+```
+attr Staubsauger planAuto 1
+set Staubsauger buildPlan
+```
+
+Das Ergebnis ist eine JSON-Datei neben den Aufzeichnungen,
+`plan-<Gerät>.json`, und das Reading `planFile` nennt sie. Die FTUI-Komponente
+`<ftui-neato-map view="plan">` lädt sie und zeichnet sie; Dateiformat und
+Verfahren stehen in `docs/plan-format.md` des Repos
+[fhem-ftui-components-neatomaps](https://github.com/chrisse1/fhem-ftui-components-neatomaps).
+
+| Attribut | Vorgabe | Bedeutung |
+|---|---|---|
+| `planAuto` | 0 | nach jeder Reinigung neu rechnen |
+| `planSources` | 8 | wie viele Aufzeichnungen eingehen, die neuesten zuerst |
+| `planCell` | 0.10 | Zellgröße in Metern; steht in der Datei, die Anzeige übernimmt sie |
+
+**Es dauert.** Jeder Lauf wird gegen den Rahmen gedreht und geschoben, bis er
+passt, und zwar über *alle* Drehungen – gemessen rund eine Minute je
+Aufzeichnung auf einem gewöhnlichen Rechner, auf einem kleinen Board
+entsprechend länger. Das läuft in einem eigenen, heruntergestuften Prozess;
+FHEM selbst hält nichts an. Wer es kürzer braucht, nimmt weniger
+`planSources`.
+
+Läufe, die nicht passen, werden **abgelehnt** statt hineingezwungen – eine
+andere Etage in denselben Rahmen zu pressen zieht Wände quer durch Räume. Das
+Reading `planState` sagt, wenn einer aussortiert wurde.
+
+Von Hand, ohne FHEM, geht dasselbe mit
+
+```sh
+perl tools/neato_plan.pl /opt/fhem/www/neato Staubsauger
+```
+
 ### Explore und Persistent brauchen die App
 
 `startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des
@@ -688,6 +732,19 @@ python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
 python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über TCP
 python3 tools/check_track.py  # Sitzungsformat und Koordinatenkonvention
 python3 tools/check_partition.py  # Partitionstabelle des Images
+perl tools/check_plan.pl      # Grundriss gegen den Referenzfall (dauert eine Minute)
+perl tools/check_plan.pl --quick   # davon nur die schnellen Prüfungen
+```
+
+`check_plan.pl` baut den Referenzfall aus `docs/reference-plan/` neu und hält
+das Ergebnis gegen das, was die JavaScript-Referenz aus denselben drei
+Aufzeichnungen macht. Verlangt wird keine Gleichheit bis auf die Zelle – die
+Schranken stehen in `docs/plan-format.md` des Komponenten-Repos. Dieselbe
+Prüfung von der anderen Seite:
+
+```sh
+node tools/check-plan.mjs /opt/fhem/www/neato/plan-Staubsauger.json \
+     --against test/fixtures/plan/plan.json
 ```
 
 Alle laufen ohne FHEM-Installation und ohne Roboter. Die Testdaten sind

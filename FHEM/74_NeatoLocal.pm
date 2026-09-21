@@ -38,12 +38,20 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.19.0";
+my $NeatoLocal_VERSION = "0.20.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
 # that is merely slow is never cut short by it.
 my $NeatoLocal_flashLock = 600;
+
+# How long the plan may be computed before the lock counts as left behind, and
+# how long BlockingCall lets the worker live. Minutes, not seconds: the search
+# tries every rotation over the whole frame for every recording, and eight
+# recordings on a small board are a quarter of an hour. It runs niced, in a
+# forked process, and nothing waits for it.
+my $NeatoLocal_planTimeout = 1800;
+my $NeatoLocal_planLock    = 2000;
 
 # Where the images come from when nothing else is configured. The project's CI
 # builds both on every firmware change, and the text file beside them carries
@@ -85,6 +93,7 @@ my %NeatoLocal_sets = (
     "flashESP"       => "textField",
     "wifiESP"        => "textField",
     "otaESP"         => "textField",
+    "buildPlan"      => "noArg",
     "statusRequest"  => "noArg",
     "reconnect"      => "noArg",
     "testMode"       => "on,off",
@@ -196,6 +205,7 @@ sub NeatoLocal_Initialize($) {
                       . "espAppImage trackRuns:0,1 trackDir trackInterval "
                       . "trackKeepDays mapInterval mapMaxRange "
                       . "trackPose:Smooth,Raw "
+                      . "planAuto:0,1 planSources planCell "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1429,6 +1439,12 @@ sub NeatoLocal_TrackStop($) {
     # is waiting on the console.
     NeatoLocal_TrackSweep($hash);
 
+    # The plan is worth recomputing now, for the same reason -- but only if it
+    # was asked for. It takes minutes in a forked process, and a recording
+    # without scans cannot contribute to it anyway.
+    NeatoLocal_PlanStart($hash, 0)
+        if (AttrVal($name, "planAuto", 0) && ($track->{scans} || 0) > 0);
+
     return undef;
 }
 
@@ -1728,6 +1744,10 @@ sub NeatoLocal_Set($@) {
                      "NeatoLocal_FlashAborted", $hash);
         InternalTimer(gettimeofday() + 330, "NeatoLocal_FlashWatch", $hash);
         return undef;
+    }
+
+    if ($cmd eq "buildPlan") {
+        return NeatoLocal_PlanStart($hash, 1);
     }
 
     if ($cmd eq "statusRequest") {
@@ -2410,6 +2430,161 @@ sub NeatoLocal_OtaBlocking($) {
     return NeatoLocal_OneLine(NeatoLocal_OtaWork($_[0]));
 }
 
+sub NeatoLocal_PlanBlocking($) {
+    return NeatoLocal_OneLine(NeatoLocal_PlanWork($_[0]));
+}
+
+# One floor plan out of the last few recordings, written beside them so the
+# FTUI component can load the answer instead of the question.
+#
+# Everything about it happens in the forked process: the arithmetic lives in
+# FHEM/lib/NeatoLocalPlan.pm and is required here rather than at the top of
+# this file, so the main process never carries it.
+sub NeatoLocal_PlanWork($) {
+    my ($string) = @_;
+    my ($name, $dir, $device, $sources, $cell, $out) = split("\\|", $string, 6);
+    my $started = time();
+
+    # Be polite. On a single core board this runs for minutes next to the rest
+    # of the house, and nothing is waiting for the result.
+    eval { require POSIX; POSIX::nice(10); };
+
+    my $lib = AttrVal("global", "modpath", ".") . "/FHEM/lib";
+    unshift(@INC, $lib) if (!grep { $_ eq $lib } @INC);
+    eval { require NeatoLocalPlan; 1; }
+        or return "$name|NeatoLocalPlan.pm cannot be loaded from $lib: $@";
+
+    my $dh;
+    opendir($dh, $dir) or return "$name|$dir cannot be read: $!";
+    my @names = sort { $b cmp $a }
+                grep { m/^\Q$device\E-.*\.jsonl$/ } readdir($dh);
+    closedir($dh);
+
+    return "$name|no recordings of $device in $dir -- set trackRuns to 1 to record them"
+        if (!scalar(@names));
+
+    @names = @names[0 .. $sources - 1] if (scalar(@names) > $sources);
+
+    my @surveys;
+    my @used;
+    for my $file (@names) {
+        my $session = NeatoLocalPlan::read_session("$dir/$file");
+        next if (!defined($session) || !scalar(@{ $session->{scans} }));
+        push(@surveys, NeatoLocalPlan::survey($session, { cell => $cell }));
+        push(@used, $file);
+    }
+
+    return "$name|none of the " . scalar(@names) . " recordings has scans -- "
+         . "without mapInterval only the track is recorded, and a track is not a plan"
+        if (!scalar(@surveys));
+
+    my $plan = NeatoLocalPlan::merge_plan(\@surveys, { cell => $cell });
+
+    my @stamp = gmtime(time());
+    my $built = sprintf("%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                        $stamp[5] + 1900, $stamp[4] + 1, $stamp[3],
+                        $stamp[2], $stamp[1], $stamp[0]);
+    my @files = map { $used[$_->{index}] } @{ $plan->{placements} };
+
+    my $fh;
+    open($fh, ">", "$out.new") or return "$name|$out cannot be written: $!";
+    print $fh NeatoLocalPlan::as_json($plan, \@files, $built);
+    close($fh);
+    # Into place in one step: a panel polling the file must never catch it
+    # half written.
+    rename("$out.new", $out) or return "$name|$out cannot be replaced: $!";
+
+    return sprintf("%s|OK|%s|%d|%d|%d|%d", $name, $out,
+                   scalar(@{ $plan->{cells} }), $plan->{runs},
+                   scalar(@{ $plan->{rejected} }), time() - $started);
+}
+
+# Start a plan run, from "set buildPlan" or after a cleaning run.
+sub NeatoLocal_PlanStart($$) {
+    my ($hash, $manual) = @_;
+    my $name = $hash->{NAME};
+
+    if ($hash->{helper}{planRunning}) {
+        my $age = time() - $hash->{helper}{planRunning};
+        if ($age < $NeatoLocal_planLock) {
+            return $manual ? "a plan has been computed for ${age}s already" : undef;
+        }
+        Log3 $name, 2, "NeatoLocal ($name) - the last plan run left its lock "
+                     . "behind ${age}s ago, taking it over";
+    }
+
+    my $dir     = AttrVal($name, "trackDir", "./www/neato");
+    my $sources = AttrVal($name, "planSources", 8);
+    my $cell    = AttrVal($name, "planCell", 0.10);
+
+    if ($sources !~ m/^\d+$/ || $sources < 1) {
+        my $why = "planSources is '$sources', expected how many recordings go in";
+        Log3 $name, 1, "NeatoLocal ($name) - $why";
+        return $manual ? $why : undef;
+    }
+    if ($cell !~ m/^\d*\.?\d+$/ || $cell <= 0) {
+        my $why = "planCell is '$cell', expected a cell size in metres such as 0.10";
+        Log3 $name, 1, "NeatoLocal ($name) - $why";
+        return $manual ? $why : undef;
+    }
+
+    my $out = "$dir/plan-$name.json";
+    $hash->{helper}{planRunning} = time();
+    Log3 $name, 3, "NeatoLocal ($name) - computing the plan from up to $sources "
+                 . "recordings in $dir, this takes minutes";
+
+    BlockingCall("NeatoLocal_PlanBlocking",
+                 "$name|$dir|$name|$sources|$cell|$out",
+                 "NeatoLocal_PlanDone", $NeatoLocal_planTimeout,
+                 "NeatoLocal_PlanAborted", $hash);
+
+    return undef;
+}
+
+sub NeatoLocal_PlanDone($) {
+    my ($string) = @_;
+    my ($name, $result, $file, $cells, $runs, $rejected, $seconds)
+        = split("\\|", $string, 7);
+    my $hash = $defs{$name};
+
+    return if (!defined($hash));
+    delete $hash->{helper}{planRunning};
+
+    if (!defined($result) || $result ne "OK") {
+        my $why = defined($result) ? $result : "no result";
+        Log3 $name, 1, "NeatoLocal ($name) - no plan: $why";
+        readingsSingleUpdate($hash, "planState", "failed: $why", 1);
+        return undef;
+    }
+
+    Log3 $name, 3, "NeatoLocal ($name) - plan written to $file: $cells cells "
+                 . "from $runs recordings"
+                 . ($rejected ? ", $rejected did not fit" : "")
+                 . ", ${seconds}s";
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "planFile", $file);
+    readingsBulkUpdate($hash, "planCells", $cells);
+    readingsBulkUpdate($hash, "planRuns", $runs);
+    readingsBulkUpdate($hash, "planState", $rejected ? "ok, $rejected did not fit" : "ok");
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
+sub NeatoLocal_PlanAborted($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    delete $hash->{helper}{planRunning};
+    Log3 $name, 1, "NeatoLocal ($name) - the plan run was cut short after "
+                 . "${NeatoLocal_planTimeout}s. Fewer recordings in planSources, "
+                 . "or a bigger planCell, make it shorter.";
+    readingsSingleUpdate($hash, "planState", "timed out", 1);
+
+    return undef;
+}
+
 sub NeatoLocal_FlashWork($) {
     my ($string) = @_;
     my ($name, $port, $image, $ssid, $psk) = split("\\|", $string, 5);
@@ -3034,6 +3209,11 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>syncTime</b> - sets the robot's scheduler clock from FHEM. Without
         the cloud nothing else keeps that clock right.</li>
     <li><b>button &lt;name&gt;</b> - simulates any UI or IR button press</li>
+    <li><b>buildPlan</b> - computes one floor plan from the last recordings and
+        writes it as plan-&lt;device&gt;.json beside them. Runs in a forked,
+        niced process and takes minutes; the reading <b>planFile</b> names the
+        result. Needs recordings with lidar scans, so trackRuns and
+        mapInterval have to be set.</li>
     <li><b>statusRequest</b> - polls charger, error and motor state</li>
     <li><b>testMode &lt;on|off&gt;</b> - enters/leaves the console test mode.
         <b>While test mode is on the robot ignores its own buttons and will
@@ -3109,6 +3289,16 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>trackKeepDays</b> - how long finished sessions are kept, default 14.
         Swept after each run; 0 keeps them for good. Only files this device
         wrote itself are ever removed</li>
+    <li><b>planAuto</b> - compute the floor plan after every cleaning run,
+        default 0. A run without scans is skipped; there is nothing to build a
+        plan from.</li>
+    <li><b>planSources</b> - how many recordings go into the plan, newest
+        first, default 8. Every one of them costs about a minute, and runs
+        from the same afternoon see the same furniture in the same place and
+        agree for the wrong reason.</li>
+    <li><b>planCell</b> - the cell size of the plan in metres, default 0.10.
+        It is written into the file, so the display uses whatever is set
+        here.</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -3249,6 +3439,11 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>syncTime</b> - stellt die Uhr des Zeitgebers aus FHEM. Ohne Cloud
         haelt sonst nichts mehr diese Uhr richtig.</li>
     <li><b>button &lt;name&gt;</b> - simuliert einen beliebigen Tastendruck</li>
+    <li><b>buildPlan</b> - rechnet aus den letzten Aufzeichnungen einen
+        gemeinsamen Grundriss und legt ihn als plan-&lt;Geraet&gt;.json daneben.
+        Laeuft in einem eigenen, heruntergestuften Prozess und dauert Minuten;
+        das Reading <b>planFile</b> nennt das Ergebnis. Braucht Aufzeichnungen
+        mit Lidar-Scans, also trackRuns und mapInterval.</li>
     <li><b>statusRequest</b> - fragt Ladezustand, Fehler und Motoren ab</li>
     <li><b>testMode &lt;on|off&gt;</b> - schaltet den Testmodus der Konsole.
         <b>Im Testmodus reagiert der Roboter nicht mehr auf seine Tasten und
@@ -3330,6 +3525,16 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>trackKeepDays</b> - wie lange fertige Sitzungen bleiben, Standard 14.
         Aufgeraeumt wird nach jedem Lauf; 0 behaelt alles. Entfernt werden nur
         Dateien, die dieses Geraet selbst geschrieben hat</li>
+    <li><b>planAuto</b> - nach jeder Reinigung den Grundriss neu rechnen,
+        Standard 0. Ein Lauf ohne Scans wird uebersprungen, aus ihm entsteht
+        kein Grundriss.</li>
+    <li><b>planSources</b> - wie viele Aufzeichnungen in den Grundriss eingehen,
+        die neuesten zuerst, Standard 8. Jede kostet etwa eine Minute, und zwei
+        Laeufe vom selben Nachmittag sehen dieselben Moebel am selben Platz und
+        sind sich aus dem falschen Grund einig.</li>
+    <li><b>planCell</b> - die Zellgroesse des Grundrisses in Metern, Standard
+        0,10. Sie steht in der Datei, die Anzeige uebernimmt also, was hier
+        eingestellt ist.</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,

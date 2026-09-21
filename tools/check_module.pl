@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 308;
+use Test::More tests => 346;
 
 package main;
 
@@ -1217,4 +1217,164 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
 
     RemoveInternalTimer($ph, "NeatoLocal_TrackTimer");
     NeatoLocal_TrackStop($ph);
+}
+
+# --- the floor plan --------------------------------------------------------
+# The arithmetic lives in FHEM/lib/NeatoLocalPlan.pm and is checked by
+# tools/check_plan.pl against the reference case. What is checked here is the
+# wiring: who starts a run, with which arguments, and what comes back.
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my ($plh, $plr) = mkdev("plan NeatoLocal 192.168.1.42:23");
+    $attr{"plan"}{trackDir} = $dir;
+    @BLOCKING = ();
+
+    NeatoLocal_Set($plh, "plan", "buildPlan");
+    is(scalar(@BLOCKING), 1, "buildPlan runs in the background");
+    is($BLOCKING[0][0], "NeatoLocal_PlanBlocking", "with the plan worker");
+    is($BLOCKING[0][1], "plan|$dir|plan|8|0.1|$dir/plan-plan.json",
+       "and is told where the recordings are, how many, the cell and where it goes");
+    is($BLOCKING[0][3], 1800, "it may take half an hour");
+
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/has been computed/,
+         "a second run is refused while one is going");
+
+    # A run that was killed -- by a restart, by the timeout -- must not lock
+    # the device for good.
+    $plh->{helper}{planRunning} = time() - 3000;
+    @BLOCKING = ();
+    is(NeatoLocal_Set($plh, "plan", "buildPlan"), undef,
+       "a lock left behind by a killed run is not permanent");
+    is(scalar(@BLOCKING), 1, "and the next run starts");
+
+    # Nonsense in the attributes is refused before a process is forked for it,
+    # and says what was expected rather than just failing.
+    delete $plh->{helper}{planRunning};
+    $attr{"plan"}{planSources} = "viele";
+    @BLOCKING = ();
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/how many recordings/,
+         "planSources has to be a number");
+    is(scalar(@BLOCKING), 0, "and nothing is forked for it");
+
+    $attr{"plan"}{planSources} = 3;
+    $attr{"plan"}{planCell} = "grob";
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/cell size in metres/,
+         "planCell too");
+    is(scalar(@BLOCKING), 0, "still nothing forked");
+
+    $attr{"plan"}{planCell} = 0.05;
+    delete $plh->{helper}{planRunning};
+    @BLOCKING = ();
+    NeatoLocal_Set($plh, "plan", "buildPlan");
+    is($BLOCKING[0][1], "plan|$dir|plan|3|0.05|$dir/plan-plan.json",
+       "and both attributes reach the worker");
+
+    # What comes back.
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4|1|97");
+    is(ReadingsVal("plan", "planFile", ""), "$dir/plan-plan.json",
+       "the file is announced as a reading, so a panel can bind it");
+    is(ReadingsVal("plan", "planCells", ""), 1816, "with how many cells it has");
+    is(ReadingsVal("plan", "planRuns", ""), 4, "and how many runs went in");
+    like(ReadingsVal("plan", "planState", ""), qr/^ok, 1 did not fit/,
+         "a run that did not fit is said out loud, not swallowed");
+    ok(!$plh->{helper}{planRunning}, "and the lock is released");
+
+    $plh->{helper}{planRunning} = time();
+    NeatoLocal_PlanDone("plan|no recordings of plan in $dir");
+    like(ReadingsVal("plan", "planState", ""), qr/^failed: no recordings/,
+         "a failure says what was wrong");
+    ok(!$plh->{helper}{planRunning}, "and releases the lock too");
+    is(ReadingsVal("plan", "planFile", ""), "$dir/plan-plan.json",
+       "the plan from before is still the plan -- a failed run does not erase it");
+
+    $plh->{helper}{planRunning} = time();
+    NeatoLocal_PlanAborted($plh);
+    like(ReadingsVal("plan", "planState", ""), qr/timed out/, "a cut short run says so");
+    ok(!$plh->{helper}{planRunning}, "and does not leave the lock behind");
+}
+
+# After a cleaning run the plan is worth recomputing -- but only if it was
+# asked for, and only if the run has scans. Without mapInterval a recording is
+# a track, and a track is not a plan.
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    for my $case ([0, 5, 0, "planAuto off: nothing is computed after a run"],
+                  [1, 0, 0, "planAuto on but no scans: nothing to build a plan from"],
+                  [1, 5, 1, "planAuto on and scans recorded: the plan is recomputed"]) {
+        my ($auto, $scans, $expected, $what) = @$case;
+
+        my ($ah, $ar) = mkdev("auto NeatoLocal 192.168.1.42:23");
+        $attr{"auto"}{trackDir} = $dir;
+        $attr{"auto"}{planAuto} = $auto;
+        NeatoLocal_TrackStart($ah);
+        $ah->{helper}{track}{scans} = $scans;
+
+        @BLOCKING = ();
+        NeatoLocal_TrackStop($ah);
+        is(scalar(grep { $_->[0] eq "NeatoLocal_PlanBlocking" } @BLOCKING), $expected, $what);
+        delete $ah->{helper}{planRunning};
+    }
+}
+
+# The worker itself, once, on a recording small enough that the whole thing
+# runs in a moment: a single run is its own frame, so nothing has to be fitted
+# and only reading, gridding and writing are left. What this pins down is the
+# path from a folder of recordings to a file on disk, including the rename that
+# keeps a panel from ever reading half a plan.
+{
+    use File::Temp qw(tempdir);
+    use JSON::PP;
+    my $dir = tempdir(CLEANUP => 1);
+
+    open(my $rec, ">", "$dir/w-2026-09-20_10-00-00.jsonl") or die($!);
+    print $rec "{\"device\":\"w\",\"started\":\"2026-09-20_10-00-00\",\"unit\":\"m\"}\n";
+    # Four beams from two places, far enough apart to make more than one cell.
+    for my $at (0, 1) {
+        print $rec "{\"scan\":{\"x\":$at,\"y\":0,\"th\":0,\"pts\":["
+                 . "[0,2000],[90,2000],[180,2000],[270,2000]]}}\n";
+    }
+    print $rec "{\"summary\":{\"points\":2,\"scans\":2,\"distance\":1.0,"
+             . "\"rotation\":0,\"seconds\":10}}\n";
+    close($rec);
+
+    my $out = "$dir/plan-w.json";
+    my $result = NeatoLocal_PlanWork("w|$dir|w|8|0.1|$out");
+    my ($who, $state, $file, $cells, $runs) = split(/\|/, $result);
+
+    is($state, "OK", "the worker builds a plan from a folder of recordings")
+        or diag($result);
+    is($file, $out, "and says where it put it");
+    is($runs, 1, "one recording, one run in the plan");
+    ok($cells > 0, "and it has cells in it");
+    ok(-e $out && !-e "$out.new", "the file is in place and the half written one is gone");
+
+    my $written = eval {
+        open(my $fh, "<", $out) or die($!);
+        local $/ = undef;
+        JSON::PP->new->decode(<$fh>);
+    };
+    ok(ref($written) eq "HASH", "what was written is JSON") or diag($@);
+    is($written->{runs}, 1, "with the number of runs the component needs");
+    is($written->{cell}, 0.1, "and the cell size, so both sides use the same one");
+    is(scalar(@{ $written->{cells} }), $cells, "and every cell that was counted");
+    is(scalar(@{ $written->{cells}[0] }), 4, "each one as [ix, iy, walls, seen]");
+    ok($written->{cells}[0][0] == int($written->{cells}[0][0]),
+       "cell indices, not metres");
+
+    # A folder without recordings, and one whose recordings have no scans, are
+    # the two ways this goes wrong in practice. Both have to say which it was.
+    my $empty = tempdir(CLEANUP => 1);
+    like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/no recordings/,
+         "an empty folder says there is nothing to build from");
+
+    open(my $bare, ">", "$empty/w-2026-09-20_11-00-00.jsonl") or die($!);
+    print $bare "{\"device\":\"w\",\"started\":\"2026-09-20_11-00-00\",\"unit\":\"m\"}\n";
+    print $bare "{\"t\":1.0,\"x\":0,\"y\":0,\"th\":0}\n";
+    close($bare);
+    like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/mapInterval/,
+         "and a track without scans points at the attribute that records them");
 }

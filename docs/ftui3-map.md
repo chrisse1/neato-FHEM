@@ -131,6 +131,25 @@ unkritisch, bei den größeren Mengen aber ein Kandidat für einen Worker.
 * `docs/reference-track-botvac-d6.jsonl` – echte, ausgedünnte Aufzeichnung.
   **Damit lässt sich ohne Roboter und ohne FHEM entwickeln.**
 
+## Mehrere Läufe: der gemeinsame Grundriss
+
+Das oben Beschriebene ist ein einzelner Lauf. Mehrere zusammengelegt ergeben
+einen Grundriss, und den rechnet **das Modul**, nicht die Anzeige:
+
+* Datei: `plan-<Gerät>.json` in `trackDir`, also neben den Aufzeichnungen
+* Reading: **`planFile`** nennt den Pfad, genau wie `trackFile` den der
+  laufenden Sitzung – die Komponente kann ihn binden, statt ihn als Attribut
+  eingetragen zu bekommen
+* dazu `planCells` (wie viele Zellen), `planRuns` (wie viele Aufzeichnungen
+  eingegangen sind) und `planState` (`ok`, `ok, 1 did not fit`, `failed: …`)
+* gerechnet wird auf `set <Gerät> buildPlan` oder, mit `attr <Gerät> planAuto 1`,
+  nach jeder Reinigung
+
+Dateiformat und Verfahren stehen in `docs/plan-format.md` des Repos
+`chrisse1/fhem-ftui-components-neatomaps`; die Referenzfassung dieser Seite
+liegt hier in `FHEM/lib/NeatoLocalPlan.pm` und wird von `tools/check_plan.pl`
+gegen die JavaScript-Fassung gehalten.
+
 ## Was die Karte nicht ist
 
 * **Kein Grundriss der Wohnung, sondern des Laufs.** Fehlt ein Raum, war der
