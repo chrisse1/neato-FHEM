@@ -44,7 +44,7 @@ Kommentare (nur in den Fixtures im Repo, nicht in echten Aufzeichnungen).
 ```json
 {"device":"Staubsauger","started":"2026-09-20_11-59-11","module":"0.19.0","unit":"m"}
 {"t":64766.91,"x":0.000,"y":0.000,"th":0.0}
-{"scan":{"x":1.204,"y":0.418,"th":92.0,"speed":5.02,"pose":"Smooth","pts":[[0,1284],[1,1266]]}}
+{"scan":{"x":1.204,"y":0.418,"th":92.0,"speed":5.02,"pose":"Smooth","tilt":[-2.33,-1.20,0.951],"pts":[[0,1284],[1,1266]]}}
 {"summary":{"points":549,"scans":50,"distance":137.8,"rotation":20500,"seconds":1500}}
 ```
 
@@ -54,6 +54,8 @@ Kommentare (nur in den Fixtures im Repo, nicht in echten Aufzeichnungen).
 * **Scan** – eine je Lidar-Umdrehung. `pts` sind `[Winkel in Grad, Entfernung
   in mm]`, gemessen von der Pose **in derselben Zeile**. `speed` ist die
   Drehzahl des Lidar in Hz, `pose` die verwendete Positionsquelle.
+  `tilt` ist optional (ab Modul 0.22.0) und trägt `[Pitch, Roll, |a|]` in Grad
+  bzw. g – siehe unten. Ältere Aufzeichnungen haben es nicht.
 * **Zusammenfassung** – einmal am Ende. Fehlt, solange der Lauf noch läuft;
   ihr Vorhandensein ist das Kennzeichen einer abgeschlossenen Sitzung.
 
@@ -130,6 +132,43 @@ unkritisch, bei den größeren Mengen aber ein Kandidat für einen Worker.
 * `tools/check_track.py` – prüft Format, Konvention und Strahlengang
 * `docs/reference-track-botvac-d6.jsonl` – echte, ausgedünnte Aufzeichnung.
   **Damit lässt sich ohne Roboter und ohne FHEM entwickeln.**
+
+## Schräglage: warum `tilt` mitgeschrieben wird
+
+Arbeitet sich der Roboter an einer Engstelle hoch, steht er schräg, und dann
+kippt die Scanebene mit. Das erzeugt **keine** Streuung, sondern eine erfundene
+Wand: zwei Ebenen schneiden sich in einer Geraden, die Scanebene schneidet den
+Boden, und in Polarkoordinaten ist eine Gerade `d/cos(a)` – dieselbe Form wie
+eine echte Wand. Nachgerechnet bei 4° Neigung und 80 mm Lidar-Höhe stimmt das
+auf zwei Millimeter.
+
+Und sie liegt dort, wo echte Wände liegen, nämlich bei `h / sin(Neigung)`:
+
+| Neigung | Boden erscheint bei |
+|---|---|
+| 1° | 4,6 m |
+| 2° | 2,3 m |
+| 3° | 1,5 m |
+| 5° | 0,9 m |
+
+Bei realistischen 2–5° also 0,9 bis 2,3 m. **Innerhalb einer Umdrehung ist das
+von einer Wand nicht zu unterscheiden** – weder über die Form noch über die
+Entfernung. Deshalb wird der Winkel gemessen und mitgeschrieben, statt ihn
+später aus den Punkten zu rekonstruieren.
+
+Zwei Dinge dazu, bevor jemand darauf filtert:
+
+* **Der Sensor ist nicht kalibriert.** Ein D6, der waagerecht auf der Basis
+  steht, meldet −2,33° / −1,20° bei 0,951 g. Ein Filter muss also auf die
+  Abweichung vom Ruhewert *dieses Laufs* gehen, nicht auf den Absolutwert.
+* **Das dritte Feld ist der Betrag** der gemessenen Beschleunigung. Ein
+  Beschleunigungssensor misst alles, nicht nur die Schwerkraft – beim Anfahren
+  und Bremsen kippt der scheinbare Winkel, ohne dass der Roboter kippt. Eine
+  Probe, deren Betrag vom Ruhewert abweicht, wurde beim Beschleunigen genommen
+  und ist weniger wert.
+
+Eine Schwelle gibt es bewusst **noch nicht**. Sie gehört aus Daten abgelesen,
+nicht geraten.
 
 ## Mehrere Läufe: der gemeinsame Grundriss
 

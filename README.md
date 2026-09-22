@@ -143,6 +143,7 @@ und sendet bei Shutdown, Löschen und `disable` immer `TestMode Off`.
 | `battery` | Messwerte der Smart Battery |
 | `warranty` | Lebensdauerzähler |
 | `settings` | Benutzereinstellungen |
+| `accel` | Neigung des Roboters: Readings `pitch`, `roll`, `accelSum` |
 | `motors`, `sensors`, `usage`, `wifiStatus` | Rohdaten |
 | `serialPorts` | serielle Schnittstellen des Rechners mit ihren by-id-Namen |
 | `raw <Kommando>` | beliebiges Konsolenkommando |
@@ -537,6 +538,37 @@ Von Hand, ohne FHEM, geht dasselbe mit
 ```sh
 perl tools/neato_plan.pl /opt/fhem/www/neato Staubsauger
 ```
+
+### Schräglage und die erfundene Wand
+
+An Engstellen arbeitet sich der Roboter manchmal hoch und steht schräg. Die
+Scanebene kippt mit, und das ergibt **keine** Streuung, sondern eine erfundene
+Wand: zwei Ebenen schneiden sich in einer Geraden, die Scanebene schneidet den
+Boden, und eine Gerade ist in Polarkoordinaten `d/cos(a)` – genau die Form
+einer echten Wand. Sie liegt bei `h / sin(Neigung)`, bei 2–5° also 0,9 bis
+2,3 m. Innerhalb einer Umdrehung ist sie von einer echten Wand nicht zu
+unterscheiden, weder über die Form noch über die Entfernung.
+
+Der Weg zur Wand wird durch die Schräglage übrigens fast nicht länger – bei 2°
+und 3 m sind es 1,8 mm. Punkte *hinter* einer Wand entstehen dadurch, dass der
+schräg nach oben laufende Strahl über ein niedriges Hindernis hinweggeht.
+
+Deshalb schreibt das Modul den Winkel mit, statt ihn später zu erraten: jeder
+Scan trägt `"tilt":[Pitch, Roll, |a|]`, gemessen mit `GetAccel` unmittelbar vor
+dem Scan. Von Hand abfragen lässt er sich mit
+
+```
+get Staubsauger accel
+```
+
+was die Readings `pitch`, `roll` und `accelSum` setzt.
+
+**Einen Filter gibt es bewusst noch nicht.** Der Sensor ist nicht kalibriert –
+ein waagerecht stehender D6 meldet −2,33° / −1,20° bei 0,951 g statt 1,000 –,
+und ein Beschleunigungssensor misst jede Beschleunigung, nicht nur die
+Schwerkraft: beim Anfahren kippt der scheinbare Winkel, ohne dass der Roboter
+kippt. Dafür ist der Betrag im dritten Feld da. Die Schwelle gehört aus ein
+paar Läufen abgelesen, nicht geraten.
 
 ### Explore und Persistent brauchen die App
 

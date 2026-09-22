@@ -38,7 +38,7 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.21.0";
+my $NeatoLocal_VERSION = "0.22.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -108,6 +108,7 @@ my %NeatoLocal_gets = (
     "charger"   => "noArg",
     "motors"    => "noArg",
     "sensors"   => "noArg",
+    "accel"     => "noArg",
     "state"     => "noArg",
     "usage"     => "noArg",
     "warranty"  => "noArg",
@@ -1169,6 +1170,76 @@ sub NeatoLocal_ParsePose($) {
 # nothing returned the beam. The lidar of a Botvac reaches about five metres, so
 # anything past that is not a measurement. A filter written against a tidy scan
 # would have put those straight into the map.
+# Pitch and roll from GetAccel, in degrees, plus the magnitude of what the
+# sensor felt.
+#
+#   Label,Value
+#   PitchInDegrees, -2.33
+#   RollInDegrees, -1.20
+#   XInG, 0.039
+#   ...
+#   SumInG, 0.951
+#
+# SumInG travels with them on purpose. An accelerometer measures every
+# acceleration, not just gravity, so while the robot pulls away or brakes the
+# apparent angle tilts without the robot tilting. A sample whose magnitude is
+# not the one the robot shows at rest was taken while it was being pushed
+# around, and is worth less than one that matches. Whoever reads the recording
+# can tell the two apart only if the number is there.
+#
+# Note the sensor is NOT calibrated: a D6 standing level on its base reports
+# -2.33 / -1.20 degrees at 0.951 g. The numbers are good for a change, not for
+# an absolute angle, so anything built on them has to work off the run's own
+# resting value rather than off zero.
+sub NeatoLocal_ReadAccel($) {
+    my ($body) = @_;
+
+    return undef if (!defined($body));
+
+    my ($pitch) = ($body =~ m/PitchInDegrees\s*,\s*(-?[\d.]+)/i);
+    my ($roll)  = ($body =~ m/RollInDegrees\s*,\s*(-?[\d.]+)/i);
+    my ($sum)   = ($body =~ m/SumInG\s*,\s*(-?[\d.]+)/i);
+
+    return undef if (!defined($pitch) || !defined($roll));
+
+    return ($pitch + 0, $roll + 0, defined($sum) ? $sum + 0 : undef);
+}
+
+sub NeatoLocal_ParseAccel($$$) {
+    my ($hash, $entry, $body) = @_;
+    my $name = $hash->{NAME};
+
+    my ($pitch, $roll, $sum) = NeatoLocal_ReadAccel($body);
+    if (!defined($pitch)) {
+        Log3 $name, 3, "NeatoLocal ($name) - no angles in the accelerometer answer";
+        return undef;
+    }
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "pitch", $pitch);
+    readingsBulkUpdate($hash, "roll", $roll);
+    readingsBulkUpdate($hash, "accelSum", $sum) if (defined($sum));
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
+# The same answer during a run, where it is kept for the scan that follows
+# rather than written to readings: at mapInterval 5 that would be an event
+# every five seconds all run long, and nothing reads it live.
+sub NeatoLocal_TrackAccel($$$) {
+    my ($hash, $entry, $body) = @_;
+
+    my $track = $hash->{helper}{track};
+    return undef if (!$track);
+
+    my ($pitch, $roll, $sum) = NeatoLocal_ReadAccel($body);
+    return undef if (!defined($pitch));
+
+    $track->{tilt} = [ $pitch, $roll, $sum ];
+    return undef;
+}
+
 sub NeatoLocal_ParseLidar($;$) {
     my ($body, $maxRange) = @_;
 
@@ -1222,13 +1293,23 @@ sub NeatoLocal_ParseScan($$$) {
     my $fh = $track->{fh};
     my $pts = join(",", map { "[$_->[0],$_->[1]]" } @$points);
 
+    # Taken, not carried over: the field is there when the angle was measured
+    # for this scan and absent when it was not. A stale one would be worse than
+    # none, because it looks just as trustworthy.
+    my $tilt = delete $track->{tilt};
+    my $angle = "";
+    if ($tilt) {
+        $angle = sprintf(",\"tilt\":[%.2f,%.2f%s]", $tilt->[0], $tilt->[1],
+                         defined($tilt->[2]) ? sprintf(",%.3f", $tilt->[2]) : "");
+    }
+
     print $fh sprintf("{\"scan\":{\"x\":%.3f,\"y\":%.3f,\"th\":%.1f,"
-                    . "\"speed\":%.2f,\"pose\":\"%s\",\"pts\":[%s]}}\n",
+                    . "\"speed\":%.2f,\"pose\":\"%s\"%s,\"pts\":[%s]}}\n",
                       defined($track->{lastX}) ? $track->{lastX} : 0,
                       defined($track->{lastY}) ? $track->{lastY} : 0,
                       defined($track->{lastTheta}) ? $track->{lastTheta} : 0,
                       defined($speed) ? $speed : 0,
-                      AttrVal($name, "trackPose", "Smooth"), $pts);
+                      AttrVal($name, "trackPose", "Smooth"), $angle, $pts);
 
     $track->{scans}++;
     return undef;
@@ -1346,15 +1427,32 @@ sub NeatoLocal_TrackTimer($) {
         my $which = AttrVal($name, "trackPose", "Smooth");
         $which = "Smooth" if ($which !~ m/^(Smooth|Raw)$/);
 
+        # A scan is 360 rows and takes the console about half a second, so it
+        # goes on its own schedule rather than with every pose.
+        my $every = AttrVal($name, "mapInterval", 0);
+        my $scanDue = ($every =~ m/^\d+$/ && $every > 0
+                       && time() - ($track->{lastScan} || 0) >= $every);
+
+        # The angle the robot stands at, ahead of the pose rather than between
+        # pose and scan: those two have to stay next to each other, because a
+        # scan is only worth anything against the position it was measured
+        # from, and every command in between makes that position staler.
+        #
+        # Why it is recorded at all: a scan taken while the robot sits askew is
+        # not noise. The tilted plane cuts the floor along a straight line, so
+        # the floor comes back shaped exactly like a wall, at h/sin(angle) --
+        # one to two metres at the two or three degrees a robot picks up
+        # working its way through a narrow spot. Within one revolution that
+        # cannot be told from a real wall, so it is measured rather than
+        # reconstructed afterwards.
+        if ($scanDue) {
+            delete $track->{tilt};
+            NeatoLocal_Enqueue($hash, "GetAccel", \&NeatoLocal_TrackAccel);
+        }
+
         NeatoLocal_Enqueue($hash, "GetRobotPos $which", \&NeatoLocal_TrackSample);
 
-        # A scan is 360 rows and takes the console about half a second, so it
-        # goes on its own schedule rather than with every pose. The pose is
-        # asked first: the points are only worth anything against the position
-        # they were measured from.
-        my $every = AttrVal($name, "mapInterval", 0);
-        if ($every =~ m/^\d+$/ && $every > 0
-            && time() - ($track->{lastScan} || 0) >= $every) {
+        if ($scanDue) {
             $track->{lastScan} = time();
             NeatoLocal_Enqueue($hash, "GetLDSScan", \&NeatoLocal_ParseScan);
 
@@ -3105,6 +3203,7 @@ sub NeatoLocal_Get($@) {
         "version"    => [ "GetVersion",       \&NeatoLocal_ParseVersion ],
         "charger"    => [ "GetCharger",       \&NeatoLocal_ParseCharger ],
         "motors"     => [ "GetMotors",        \&NeatoLocal_ParseMotors  ],
+        "accel"      => [ "GetAccel",         \&NeatoLocal_ParseAccel  ],
         "sensors"    => [ "GetAnalogSensors", undef                     ],
         "state"      => [ "GetState",         \&NeatoLocal_ParseState   ],
         "usage"      => [ "GetUsage",         undef                     ],
@@ -3276,6 +3375,14 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>help [command]</b> - returns the robot's own command list. Use this
         to verify the console syntax of your firmware.</li>
     <li><b>raw &lt;command&gt;</b> - sends a command and returns its output</li>
+    <li><b>accel</b> - the angle the robot stands at, as the readings pitch,
+        roll and accelSum. The sensor carries no calibration: a D6 level on its
+        base reports -2.33 / -1.20 degrees at 0.951 g, so the numbers are good
+        for a change and not for an absolute angle. While a run records scans,
+        the same reading is taken just before each one and written into the
+        session file as "tilt" -- a scan taken askew has the floor in it shaped
+        exactly like a wall, and within one revolution the two cannot be told
+        apart.</li>
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>
@@ -3513,6 +3620,14 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>help [Kommando]</b> - liefert die Kommandoliste des Roboters. Damit
         laesst sich die Syntax der eigenen Firmware pruefen.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein Kommando und gibt die Ausgabe zurueck</li>
+    <li><b>accel</b> - die Neigung des Roboters, als Readings pitch, roll und
+        accelSum. Der Sensor ist nicht kalibriert: ein D6, der waagerecht auf
+        der Basis steht, meldet -2,33 / -1,20 Grad bei 0,951 g. Die Werte taugen
+        also fuer eine Aenderung, nicht fuer einen absoluten Winkel. Waehrend
+        eines Laufs mit Scans wird derselbe Wert unmittelbar vor jedem Scan
+        genommen und als "tilt" in die Sitzungsdatei geschrieben -- ein schraeg
+        aufgenommener Scan enthaelt den Fussboden in der Form einer Wand, und
+        innerhalb einer Umdrehung sind die beiden nicht zu unterscheiden.</li>
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>

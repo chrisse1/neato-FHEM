@@ -274,6 +274,26 @@ def motors_text(state):
     ])
 
 
+def accel_text(state):
+    """GetAccel, shaped like a real D6's answer.
+
+    The values are the ones a D6 reports standing level on its base: not zero
+    and not one g, because the sensor carries no calibration (GetCalInfo shows
+    XAccel/YAccel/ZAccel all 0). Anything reading these has to work off a
+    resting value rather than off zero, and a simulator that answered with a
+    tidy 0.00 / 0.00 / 1.000 would hide exactly that.
+    """
+    return (
+        "Label,Value\n"
+        "PitchInDegrees, -2.33\n"
+        "RollInDegrees, -1.20\n"
+        "XInG, 0.039\n"
+        "YInG,-0.020\n"
+        "ZInG, 0.950\n"
+        "SumInG, 0.951"
+    )
+
+
 def handle_command(robot, line):
     """Return the console output for one command line."""
     cmd = line.strip()
@@ -315,6 +335,9 @@ def handle_command(robot, line):
             robot.set_test_mode(False)
             return ""
         return "TestMode requires On or Off"
+
+    if low == "getaccel":
+        return accel_text(state)
 
     if low == "getcharger":
         return charger_text(state)

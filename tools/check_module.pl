@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 352;
+use Test::More tests => 369;
 
 package main;
 
@@ -1184,7 +1184,8 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     my @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
     @sent = map { my $c = $_; $c =~ s/\s+$//; $c } @sent;
 
-    is($sent[0], "GetRobotPos Smooth", "the corrected pose is the default");
+    is((grep { m/^GetRobotPos/ } @sent)[0], "GetRobotPos Smooth",
+       "the corrected pose is the default");
     is(scalar(grep { $_ eq "GetLDSScan" } @sent), 1, "a scan goes with it");
     is(scalar(grep { $_ eq "GetRobotPos Smooth" } @sent), 2,
        "and the pose twice, so the scan's staleness is visible");
@@ -1204,7 +1205,8 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     @WRITTEN = ();
     NeatoLocal_TrackTimer($ph);
     @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
-    like($sent[0], qr/GetRobotPos Raw/, "Raw can still be asked for");
+    like((grep { m/^GetRobotPos/ } @sent)[0], qr/GetRobotPos Raw/,
+         "Raw can still be asked for");
 
     # Anything else falls back rather than being sent to the robot.
     $attr{"pos"}{trackPose} = "nonsense";
@@ -1213,7 +1215,8 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     @WRITTEN = ();
     NeatoLocal_TrackTimer($ph);
     @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
-    like($sent[0], qr/GetRobotPos Smooth/, "and a bad value does not reach it");
+    like((grep { m/^GetRobotPos/ } @sent)[0], qr/GetRobotPos Smooth/,
+         "and a bad value does not reach it");
 
     RemoveInternalTimer($ph, "NeatoLocal_TrackTimer");
     NeatoLocal_TrackStop($ph);
@@ -1394,4 +1397,103 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     close($bare);
     like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/mapInterval/,
          "and a track without scans points at the attribute that records them");
+}
+
+# --- the tilt of the scan plane --------------------------------------------
+# A scan taken while the robot sits askew is not noise. The tilted plane cuts
+# the floor along a straight line, so the floor comes back shaped exactly like
+# a wall -- at h/sin(angle), which is one to two metres at the two or three
+# degrees a robot picks up working its way through a narrow spot. Inside one
+# revolution that cannot be told from a real wall, so the angle is recorded
+# with the scan rather than inferred from it afterwards.
+{
+    # Verbatim from a BotVac D6 standing level on its base, docs/reference-dump.
+    my $answer = "Label,Value\n"
+               . "PitchInDegrees, -2.33\n"
+               . "RollInDegrees, -1.20\n"
+               . "XInG, 0.039\n"
+               . "YInG,-0.020\n"
+               . "ZInG, 0.950\n"
+               . "SumInG, 0.951\n";
+
+    my ($pitch, $roll, $sum) = NeatoLocal_ReadAccel($answer);
+    is($pitch, -2.33, "pitch is read out of the accelerometer answer");
+    is($roll, -1.20, "roll too");
+    is($sum, 0.951, "and the magnitude the sensor felt");
+
+    # It travels along because an accelerometer measures every acceleration,
+    # not just gravity: while the robot pulls away the apparent angle tilts
+    # without the robot tilting. Only the magnitude tells the two apart.
+    ok($sum < 1, "which on a level robot is not 1 g -- the sensor is uncalibrated");
+    ok(abs($pitch) > 1, "and level is not zero degrees either");
+
+    is(scalar(NeatoLocal_ReadAccel("Label,Value\nXInG, 0.039\n")), undef,
+       "an answer without angles yields nothing rather than a guess");
+    is(scalar(NeatoLocal_ReadAccel(undef)), undef, "as does no answer at all");
+
+    my ($gh, $gr) = mkdev("acc NeatoLocal 192.168.1.42:23");
+    NeatoLocal_ParseAccel($gh, undef, $answer);
+    is(ReadingsVal("acc", "pitch", ""), -2.33, "get accel sets a reading");
+    is(ReadingsVal("acc", "roll", ""), -1.20, "one per axis");
+    is(ReadingsVal("acc", "accelSum", ""), 0.951, "and the magnitude with them");
+}
+
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my ($th, $tr) = mkdev("tilt NeatoLocal 192.168.1.42:23");
+    $attr{"tilt"}{trackDir} = $dir;
+    $attr{"tilt"}{mapInterval} = 5;
+    NeatoLocal_TrackStart($th);
+
+    # The angle is asked right before the scan, so the two describe the same
+    # moment as nearly as the console allows.
+    $th->{helper}{queue} = [];
+    delete $th->{helper}{pending};
+    delete $th->{helper}{track}{lastScan};
+    @WRITTEN = ();
+    NeatoLocal_TrackTimer($th);
+    my @sent = (@WRITTEN, map { $_->{cmd} } @{$th->{helper}{queue}});
+    @sent = map { my $c = $_; $c =~ s/\s+$//; $c } @sent;
+    is(scalar(grep { $_ eq "GetAccel" } @sent), 1, "a scan is preceded by the angle");
+
+    my ($atAccel) = grep { $sent[$_] eq "GetAccel" } (0 .. $#sent);
+    my ($atScan)  = grep { $sent[$_] eq "GetLDSScan" } (0 .. $#sent);
+    ok($atAccel < $atScan, "asked before the scan, not after it");
+
+    # Ahead of the pose, not between pose and scan: those two have to stay
+    # next to each other. A scan is only worth anything against the position
+    # it was measured from, and the angle would push that position one console
+    # round trip further into the past.
+    like($sent[$atScan - 1], qr/^GetRobotPos/,
+         "and the pose still comes directly before the scan");
+
+    my $scan = "AngleInDegrees,DistInMM,Intensity,ErrorCodeHEX\n"
+             . "0,1000,100,0\n90,2000,100,0\n180,1500,100,0\n"
+             . "ROTATION_SPEED,5.02\n";
+
+    # With the angle: it lands in the record.
+    NeatoLocal_TrackAccel($th, undef, "PitchInDegrees, -7.10\nRollInDegrees, 3.40\n"
+                                    . "SumInG, 0.983\n");
+    NeatoLocal_ParseScan($th, undef, $scan);
+
+    # Without it -- the query failed, or the answer was unreadable. The field
+    # has to be absent rather than repeated from last time: a stale angle looks
+    # exactly as trustworthy as a fresh one and would be worse than none.
+    NeatoLocal_ParseScan($th, undef, $scan);
+
+    NeatoLocal_TrackStop($th);
+
+    open(my $fh, "<", ReadingsVal("tilt", "trackFile", "")) or die($!);
+    my @scans = grep { m/"scan"/ } <$fh>;
+    close($fh);
+
+    is(scalar(@scans), 2, "two scans were recorded");
+    like($scans[0], qr/"tilt":\[-7\.10,3\.40,0\.983\]/,
+         "the first carries the angle the robot stood at");
+    like($scans[0], qr/"pose":"Smooth","tilt":\[.*\],"pts":/,
+         "between the pose and the points, where a reader looks for it");
+    unlike($scans[1], qr/tilt/,
+           "the second has none rather than the one from before it");
 }
