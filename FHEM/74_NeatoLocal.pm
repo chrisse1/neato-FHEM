@@ -3380,9 +3380,12 @@ sub NeatoLocal_LeaveTestMode($) {
         base reports -2.33 / -1.20 degrees at 0.951 g, so the numbers are good
         for a change and not for an absolute angle. While a run records scans,
         the same reading is taken just before each one and written into the
-        session file as "tilt" -- a scan taken askew has the floor in it shaped
-        exactly like a wall, and within one revolution the two cannot be told
-        apart.</li>
+        session file as "tilt". The idea was that a scan taken askew has the
+        floor in it shaped exactly like a wall, which within one revolution
+        cannot be told apart. Measured over a full run it explains nothing --
+        the correlation with stray points is +0.05 -- so there is deliberately
+        no filter on it. See docs/ftui3-map.md, and tools/stray_points.py to
+        redo the measurement on a newer recording.</li>
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>
@@ -3625,9 +3628,13 @@ sub NeatoLocal_LeaveTestMode($) {
         der Basis steht, meldet -2,33 / -1,20 Grad bei 0,951 g. Die Werte taugen
         also fuer eine Aenderung, nicht fuer einen absoluten Winkel. Waehrend
         eines Laufs mit Scans wird derselbe Wert unmittelbar vor jedem Scan
-        genommen und als "tilt" in die Sitzungsdatei geschrieben -- ein schraeg
-        aufgenommener Scan enthaelt den Fussboden in der Form einer Wand, und
-        innerhalb einer Umdrehung sind die beiden nicht zu unterscheiden.</li>
+        genommen und als "tilt" in die Sitzungsdatei geschrieben. Der Gedanke
+        war, dass ein schraeg aufgenommener Scan den Fussboden in der Form einer
+        Wand enthaelt, die innerhalb einer Umdrehung nicht zu unterscheiden ist.
+        An einem vollen Lauf gemessen erklaert das nichts -- die Korrelation mit
+        verirrten Punkten liegt bei +0,05 --, es gibt deshalb bewusst keinen
+        Filter darauf. Siehe docs/ftui3-map.md, und tools/stray_points.py, um
+        die Messung auf einer neueren Aufzeichnung zu wiederholen.</li>
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>

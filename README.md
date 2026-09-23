@@ -539,36 +539,48 @@ Von Hand, ohne FHEM, geht dasselbe mit
 perl tools/neato_plan.pl /opt/fhem/www/neato Staubsauger
 ```
 
-### Schräglage und die erfundene Wand
+### Irrläufer, und die Schräglage, die nicht schuld ist
 
-An Engstellen arbeitet sich der Roboter manchmal hoch und steht schräg. Die
-Scanebene kippt mit, und das ergibt **keine** Streuung, sondern eine erfundene
-Wand: zwei Ebenen schneiden sich in einer Geraden, die Scanebene schneidet den
-Boden, und eine Gerade ist in Polarkoordinaten `d/cos(a)` – genau die Form
-einer echten Wand. Sie liegt bei `h / sin(Neigung)`, bei 2–5° also 0,9 bis
-2,3 m. Innerhalb einer Umdrehung ist sie von einer echten Wand nicht zu
-unterscheiden, weder über die Form noch über die Entfernung.
+Vereinzelt liegen Punkte hinter einer Wand und gegenüber davon einer mitten im
+Raum. Die naheliegende Erklärung ist, dass sich der Roboter an Engstellen
+hocharbeitet und die Scanebene mitkippt – dann schneidet sie den Boden, und
+zwei Ebenen schneiden sich in einer Geraden, die in Polarkoordinaten `d/cos(a)`
+ist, also genau die Form einer Wand. Bei 4° und 80 mm Lidar-Höhe stimmt das auf
+zwei Millimeter, und der Boden läge bei `h/sin(Neigung)`, bei 2–5° also 0,9 bis
+2,3 m – mitten im Wohnungsmaß.
 
-Der Weg zur Wand wird durch die Schräglage übrigens fast nicht länger – bei 2°
-und 3 m sind es 1,8 mm. Punkte *hinter* einer Wand entstehen dadurch, dass der
-schräg nach oben laufende Strahl über ein niedriges Hindernis hinweggeht.
+Deshalb schreibt das Modul seit 0.22.0 die Neigung mit: jeder Scan trägt
+`"tilt":[Pitch, Roll, |a|]`, gemessen mit `GetAccel` unmittelbar davor. Von Hand
+geht `get Staubsauger accel`, was die Readings `pitch`, `roll` und `accelSum`
+setzt.
 
-Deshalb schreibt das Modul den Winkel mit, statt ihn später zu erraten: jeder
-Scan trägt `"tilt":[Pitch, Roll, |a|]`, gemessen mit `GetAccel` unmittelbar vor
-dem Scan. Von Hand abfragen lässt er sich mit
+**Gemessen stimmt die Erklärung nicht.** Der erste vollständige Lauf damit –
+231 Scans, 61 482 Punkte, jeder mit Neigung – ergibt eine Korrelation zwischen
+Neigung und Irrläufern von **+0,05**, und über einen anderen Weg gerechnet
++0,002. Die Neigung ist dabei durchaus vorhanden: über der Ruhelage im Median
+0,9°, maximal 5,0°. Sie richtet nur keinen messbaren Schaden an.
 
+Die Irrläufer (1,95 % der Punkte) sehen stattdessen so aus: **Gruppen von 1,9
+Punkten** statt zusammenhängender Bögen, **weiter weg** als der Durchschnitt
+(Median 2182 gegen 1030 mm) und **nie zweimal am selben Fleck** – 879 Zellen,
+keine dreimal. Also einzelne schwache Rückläufer auf große Entfernung, kein
+Spiegel und keine gekippte Ebene. Dasselbe Profil zeigt eine Aufzeichnung von
+einem anderen Tag, die entstand, bevor es das Feld überhaupt gab.
+
+**Das Belegungsgitter fängt sie schon ab:** sie liegen per Konstruktion in
+Zellen mit vielen Durchquerungen und kaum Treffern, also unter der Schwelle von
+0,25. In der Punktwolke sieht man sie, im Gitter nicht.
+
+Einen `mapMaxTilt`-Filter gibt es deshalb bewusst **nicht** – er würde gute
+Scans wegwerfen, ohne etwas zu retten. Die Aufzeichnung bleibt trotzdem, ein
+Lauf in einer Wohnung ist kein Beweis für alle. Nachrechnen lässt sich das auf
+jeder Sitzung mit
+
+```sh
+python3 tools/stray_points.py /opt/fhem/www/neato/Staubsauger-....jsonl
 ```
-get Staubsauger accel
-```
 
-was die Readings `pitch`, `roll` und `accelSum` setzt.
-
-**Einen Filter gibt es bewusst noch nicht.** Der Sensor ist nicht kalibriert –
-ein waagerecht stehender D6 meldet −2,33° / −1,20° bei 0,951 g statt 1,000 –,
-und ein Beschleunigungssensor misst jede Beschleunigung, nicht nur die
-Schwerkraft: beim Anfahren kippt der scheinbare Winkel, ohne dass der Roboter
-kippt. Dafür ist der Betrag im dritten Feld da. Die Schwelle gehört aus ein
-paar Läufen abgelesen, nicht geraten.
+Ausführlich steht die Messung in [docs/ftui3-map.md](docs/ftui3-map.md).
 
 ### Explore und Persistent brauchen die App
 
@@ -786,6 +798,7 @@ python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
 python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über TCP
 python3 tools/check_track.py  # Sitzungsformat und Koordinatenkonvention
 python3 tools/check_partition.py  # Partitionstabelle des Images
+python3 tools/stray_points.py <sitzung.jsonl>   # kein Test: Irrläufer einer Aufzeichnung
 perl tools/check_plan.pl      # Grundriss gegen den Referenzfall (dauert eine Minute)
 perl tools/check_plan.pl --quick   # davon nur die schnellen Prüfungen
 ```

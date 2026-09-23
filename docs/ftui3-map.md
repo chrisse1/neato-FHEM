@@ -133,16 +133,17 @@ unkritisch, bei den größeren Mengen aber ein Kandidat für einen Worker.
 * `docs/reference-track-botvac-d6.jsonl` – echte, ausgedünnte Aufzeichnung.
   **Damit lässt sich ohne Roboter und ohne FHEM entwickeln.**
 
-## Schräglage: warum `tilt` mitgeschrieben wird
+## Schräglage: die Theorie, und warum sie nicht stimmt
 
-Arbeitet sich der Roboter an einer Engstelle hoch, steht er schräg, und dann
-kippt die Scanebene mit. Das erzeugt **keine** Streuung, sondern eine erfundene
-Wand: zwei Ebenen schneiden sich in einer Geraden, die Scanebene schneidet den
-Boden, und in Polarkoordinaten ist eine Gerade `d/cos(a)` – dieselbe Form wie
-eine echte Wand. Nachgerechnet bei 4° Neigung und 80 mm Lidar-Höhe stimmt das
-auf zwei Millimeter.
+Vereinzelt liegen Punkte **hinter** einer Wand und gegenüber davon einer mitten
+im Raum. Die naheliegende Erklärung: der Roboter arbeitet sich an Engstellen
+hoch, steht schräg, und die Scanebene kippt mit.
 
-Und sie liegt dort, wo echte Wände liegen, nämlich bei `h / sin(Neigung)`:
+Die Geometrie dazu ist sauber. Zwei Ebenen schneiden sich in einer Geraden, die
+gekippte Scanebene schneidet den Boden, und eine Gerade ist in Polarkoordinaten
+`d/cos(a)` – dieselbe Form wie eine echte Wand. Bei 4° Neigung und 80 mm
+Lidar-Höhe stimmt das auf zwei Millimeter. Der Boden erscheint bei
+`h / sin(Neigung)`:
 
 | Neigung | Boden erscheint bei |
 |---|---|
@@ -151,24 +152,73 @@ Und sie liegt dort, wo echte Wände liegen, nämlich bei `h / sin(Neigung)`:
 | 3° | 1,5 m |
 | 5° | 0,9 m |
 
-Bei realistischen 2–5° also 0,9 bis 2,3 m. **Innerhalb einer Umdrehung ist das
-von einer Wand nicht zu unterscheiden** – weder über die Form noch über die
-Entfernung. Deshalb wird der Winkel gemessen und mitgeschrieben, statt ihn
-später aus den Punkten zu rekonstruieren.
+Also mitten im Wohnungsmaß, und innerhalb einer Umdrehung von einer echten Wand
+nicht zu unterscheiden – weder über die Form noch über die Entfernung. Der Weg
+zur Wand wird dabei übrigens fast nicht länger: bei 2° und 3 m sind es 1,8 mm.
+Punkte *hinter* einer Wand könnten nur entstehen, wenn der nach oben laufende
+Strahl über ein niedriges Hindernis hinweggeht.
 
-Zwei Dinge dazu, bevor jemand darauf filtert:
+### Gemessen: sie kommt nicht vor
 
-* **Der Sensor ist nicht kalibriert.** Ein D6, der waagerecht auf der Basis
-  steht, meldet −2,33° / −1,20° bei 0,951 g. Ein Filter muss also auf die
-  Abweichung vom Ruhewert *dieses Laufs* gehen, nicht auf den Absolutwert.
-* **Das dritte Feld ist der Betrag** der gemessenen Beschleunigung. Ein
-  Beschleunigungssensor misst alles, nicht nur die Schwerkraft – beim Anfahren
-  und Bremsen kippt der scheinbare Winkel, ohne dass der Roboter kippt. Eine
-  Probe, deren Betrag vom Ruhewert abweicht, wurde beim Beschleunigen genommen
-  und ist weniger wert.
+Deshalb schreibt das Modul seit 0.22.0 die Neigung mit (Feld `tilt`, siehe
+oben). Der erste vollständige Lauf damit – 23.09.2026, 231 Scans, 61 482
+Punkte, jeder Scan mit Neigung – sagt:
 
-Eine Schwelle gibt es bewusst **noch nicht**. Sie gehört aus Daten abgelesen,
-nicht geraten.
+| Prüfung | Ergebnis |
+|---|---|
+| Neigung ↔ Anteil unbestätigter Punkte | **+0,002** |
+| Neigung ↔ Anteil Irrläufer | **+0,051** |
+| Vorhergesagter Bodenabstand gegen den Nachbarscan | hält nicht |
+
+Die dritte sah zunächst gut aus: ein Scan mit 3,72° Neigung hatte 44 % seiner
+Punkte dort, wo der Boden liegen müsste. Aber der Nachbarscan 0,4 m weiter, mit
+0,24° Neigung, hatte 34 %, und anderswo hatte der weniger gekippte Nachbar
+*mehr*. Der Anteil hängt am Ort, nicht an der Schräglage – das Testfenster hatte
+eine Entfernung erwischt, bei der in dem Raum eine Wand steht.
+
+Die Neigung schwankt dabei durchaus: über der Ruhelage des Laufs im Median
+0,9°, im 90. Perzentil 1,9°, maximal 5,0°. Sie ist da, sie richtet nur keinen
+messbaren Schaden an.
+
+### Was die Irrläufer wirklich sind
+
+1196 von 61 482 Punkten (1,95 %) liegen in Zellen, die andere Strahlen oft
+durchqueren und fast nie treffen. Ihr Profil:
+
+* **Gruppengröße 1,9 Punkte.** Eine gekippte Ebene ergäbe einen zusammen­hängenden
+  Bogen aus Dutzenden. Das hier sind Einzelgänger.
+* **Weiter weg als der Durchschnitt:** Median 2182 mm gegen 1030 mm. (Teilweise
+  definitionsbedingt – das Kriterium bevorzugt selten getroffene Zellen, und
+  ferne Zellen werden seltener getroffen.)
+* **Nie am selben Fleck:** 879 betroffene Zellen, keine dreimal. Also kein
+  Spiegel, keine Glastür, kein festes Möbel.
+
+Einzeln, weit, nicht wiederkehrend – die Signatur schwacher Rückläufer auf große
+Entfernung, dieselbe Familie wie die 16,8-m-Zeilen, die `mapMaxRange` abfängt.
+Dasselbe Profil zeigt `docs/reference-track-botvac-d6.jsonl` von einem anderen
+Tag, aufgezeichnet bevor es das Feld `tilt` überhaupt gab.
+
+**Und das Belegungsgitter fängt sie bereits ab.** Per Konstruktion liegen sie in
+Zellen mit mindestens zehn Durchquerungen und höchstens zwei Treffern, also bei
+2/12 = 0,17 unter der Wandschwelle von 0,25. In der Punktwolke sind sie zu
+sehen, im Gitter nicht.
+
+### Also kein Filter
+
+Ein Filter auf die Neigung würde gute Scans wegwerfen, ohne etwas zu retten –
+bei 8 % der Scans über 2° wären das über zehn je Lauf für nichts. Es gibt
+deshalb bewusst **kein** `mapMaxTilt`.
+
+Das Feld `tilt` bleibt trotzdem: ein Lauf in einer Wohnung ist kein Beweis für
+alle, und die Messung kostet eine kurze Abfrage alle paar Sekunden. Wer sie auf
+einer neueren Aufzeichnung wiederholen will:
+
+```sh
+python3 tools/stray_points.py /opt/fhem/www/neato/Staubsauger-....jsonl
+```
+
+Kippt das Ergebnis bei mehr Läufen, gehört dieser Abschnitt nachgezogen – und
+dann liegt auch die Schwelle darin, statt geraten zu sein.
 
 ## Mehrere Läufe: der gemeinsame Grundriss
 
