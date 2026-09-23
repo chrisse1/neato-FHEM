@@ -13,8 +13,12 @@ cd "$(dirname "$0")/.."
 
 stamp=$(date -u '+%Y-%m-%d_%H:%M:%S')
 
+# The module itself and the libraries beside it. FHEM's update creates the
+# subdirectory, the same way it does for every other module that ships one --
+# without the lib line the plan would simply be missing after "update add".
 : > controls_neatolocal.txt
-for f in FHEM/*.pm; do
+for f in FHEM/*.pm FHEM/lib/*.pm; do
+    [ -e "$f" ] || continue
     printf 'UPD %s %s %s\n' "$stamp" "$(wc -c < "$f" | tr -d ' ')" "$f" \
         >> controls_neatolocal.txt
 done

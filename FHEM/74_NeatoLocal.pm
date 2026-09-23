@@ -38,12 +38,20 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.19.0";
+my $NeatoLocal_VERSION = "0.22.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
 # that is merely slow is never cut short by it.
 my $NeatoLocal_flashLock = 600;
+
+# How long the plan may be computed before the lock counts as left behind, and
+# how long BlockingCall lets the worker live. Minutes, not seconds: the search
+# tries every rotation over the whole frame for every recording, and eight
+# recordings on a small board are a quarter of an hour. It runs niced, in a
+# forked process, and nothing waits for it.
+my $NeatoLocal_planTimeout = 1800;
+my $NeatoLocal_planLock    = 2000;
 
 # Where the images come from when nothing else is configured. The project's CI
 # builds both on every firmware change, and the text file beside them carries
@@ -85,6 +93,7 @@ my %NeatoLocal_sets = (
     "flashESP"       => "textField",
     "wifiESP"        => "textField",
     "otaESP"         => "textField",
+    "buildPlan"      => "noArg",
     "statusRequest"  => "noArg",
     "reconnect"      => "noArg",
     "testMode"       => "on,off",
@@ -99,6 +108,7 @@ my %NeatoLocal_gets = (
     "charger"   => "noArg",
     "motors"    => "noArg",
     "sensors"   => "noArg",
+    "accel"     => "noArg",
     "state"     => "noArg",
     "usage"     => "noArg",
     "warranty"  => "noArg",
@@ -196,6 +206,7 @@ sub NeatoLocal_Initialize($) {
                       . "espAppImage trackRuns:0,1 trackDir trackInterval "
                       . "trackKeepDays mapInterval mapMaxRange "
                       . "trackPose:Smooth,Raw "
+                      . "planAuto:0,1 planSources planCell "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1159,6 +1170,76 @@ sub NeatoLocal_ParsePose($) {
 # nothing returned the beam. The lidar of a Botvac reaches about five metres, so
 # anything past that is not a measurement. A filter written against a tidy scan
 # would have put those straight into the map.
+# Pitch and roll from GetAccel, in degrees, plus the magnitude of what the
+# sensor felt.
+#
+#   Label,Value
+#   PitchInDegrees, -2.33
+#   RollInDegrees, -1.20
+#   XInG, 0.039
+#   ...
+#   SumInG, 0.951
+#
+# SumInG travels with them on purpose. An accelerometer measures every
+# acceleration, not just gravity, so while the robot pulls away or brakes the
+# apparent angle tilts without the robot tilting. A sample whose magnitude is
+# not the one the robot shows at rest was taken while it was being pushed
+# around, and is worth less than one that matches. Whoever reads the recording
+# can tell the two apart only if the number is there.
+#
+# Note the sensor is NOT calibrated: a D6 standing level on its base reports
+# -2.33 / -1.20 degrees at 0.951 g. The numbers are good for a change, not for
+# an absolute angle, so anything built on them has to work off the run's own
+# resting value rather than off zero.
+sub NeatoLocal_ReadAccel($) {
+    my ($body) = @_;
+
+    return undef if (!defined($body));
+
+    my ($pitch) = ($body =~ m/PitchInDegrees\s*,\s*(-?[\d.]+)/i);
+    my ($roll)  = ($body =~ m/RollInDegrees\s*,\s*(-?[\d.]+)/i);
+    my ($sum)   = ($body =~ m/SumInG\s*,\s*(-?[\d.]+)/i);
+
+    return undef if (!defined($pitch) || !defined($roll));
+
+    return ($pitch + 0, $roll + 0, defined($sum) ? $sum + 0 : undef);
+}
+
+sub NeatoLocal_ParseAccel($$$) {
+    my ($hash, $entry, $body) = @_;
+    my $name = $hash->{NAME};
+
+    my ($pitch, $roll, $sum) = NeatoLocal_ReadAccel($body);
+    if (!defined($pitch)) {
+        Log3 $name, 3, "NeatoLocal ($name) - no angles in the accelerometer answer";
+        return undef;
+    }
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "pitch", $pitch);
+    readingsBulkUpdate($hash, "roll", $roll);
+    readingsBulkUpdate($hash, "accelSum", $sum) if (defined($sum));
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
+# The same answer during a run, where it is kept for the scan that follows
+# rather than written to readings: at mapInterval 5 that would be an event
+# every five seconds all run long, and nothing reads it live.
+sub NeatoLocal_TrackAccel($$$) {
+    my ($hash, $entry, $body) = @_;
+
+    my $track = $hash->{helper}{track};
+    return undef if (!$track);
+
+    my ($pitch, $roll, $sum) = NeatoLocal_ReadAccel($body);
+    return undef if (!defined($pitch));
+
+    $track->{tilt} = [ $pitch, $roll, $sum ];
+    return undef;
+}
+
 sub NeatoLocal_ParseLidar($;$) {
     my ($body, $maxRange) = @_;
 
@@ -1212,13 +1293,23 @@ sub NeatoLocal_ParseScan($$$) {
     my $fh = $track->{fh};
     my $pts = join(",", map { "[$_->[0],$_->[1]]" } @$points);
 
+    # Taken, not carried over: the field is there when the angle was measured
+    # for this scan and absent when it was not. A stale one would be worse than
+    # none, because it looks just as trustworthy.
+    my $tilt = delete $track->{tilt};
+    my $angle = "";
+    if ($tilt) {
+        $angle = sprintf(",\"tilt\":[%.2f,%.2f%s]", $tilt->[0], $tilt->[1],
+                         defined($tilt->[2]) ? sprintf(",%.3f", $tilt->[2]) : "");
+    }
+
     print $fh sprintf("{\"scan\":{\"x\":%.3f,\"y\":%.3f,\"th\":%.1f,"
-                    . "\"speed\":%.2f,\"pose\":\"%s\",\"pts\":[%s]}}\n",
+                    . "\"speed\":%.2f,\"pose\":\"%s\"%s,\"pts\":[%s]}}\n",
                       defined($track->{lastX}) ? $track->{lastX} : 0,
                       defined($track->{lastY}) ? $track->{lastY} : 0,
                       defined($track->{lastTheta}) ? $track->{lastTheta} : 0,
                       defined($speed) ? $speed : 0,
-                      AttrVal($name, "trackPose", "Smooth"), $pts);
+                      AttrVal($name, "trackPose", "Smooth"), $angle, $pts);
 
     $track->{scans}++;
     return undef;
@@ -1336,15 +1427,32 @@ sub NeatoLocal_TrackTimer($) {
         my $which = AttrVal($name, "trackPose", "Smooth");
         $which = "Smooth" if ($which !~ m/^(Smooth|Raw)$/);
 
+        # A scan is 360 rows and takes the console about half a second, so it
+        # goes on its own schedule rather than with every pose.
+        my $every = AttrVal($name, "mapInterval", 0);
+        my $scanDue = ($every =~ m/^\d+$/ && $every > 0
+                       && time() - ($track->{lastScan} || 0) >= $every);
+
+        # The angle the robot stands at, ahead of the pose rather than between
+        # pose and scan: those two have to stay next to each other, because a
+        # scan is only worth anything against the position it was measured
+        # from, and every command in between makes that position staler.
+        #
+        # Why it is recorded at all: a scan taken while the robot sits askew is
+        # not noise. The tilted plane cuts the floor along a straight line, so
+        # the floor comes back shaped exactly like a wall, at h/sin(angle) --
+        # one to two metres at the two or three degrees a robot picks up
+        # working its way through a narrow spot. Within one revolution that
+        # cannot be told from a real wall, so it is measured rather than
+        # reconstructed afterwards.
+        if ($scanDue) {
+            delete $track->{tilt};
+            NeatoLocal_Enqueue($hash, "GetAccel", \&NeatoLocal_TrackAccel);
+        }
+
         NeatoLocal_Enqueue($hash, "GetRobotPos $which", \&NeatoLocal_TrackSample);
 
-        # A scan is 360 rows and takes the console about half a second, so it
-        # goes on its own schedule rather than with every pose. The pose is
-        # asked first: the points are only worth anything against the position
-        # they were measured from.
-        my $every = AttrVal($name, "mapInterval", 0);
-        if ($every =~ m/^\d+$/ && $every > 0
-            && time() - ($track->{lastScan} || 0) >= $every) {
+        if ($scanDue) {
             $track->{lastScan} = time();
             NeatoLocal_Enqueue($hash, "GetLDSScan", \&NeatoLocal_ParseScan);
 
@@ -1428,6 +1536,12 @@ sub NeatoLocal_TrackStop($) {
     # Right after a run: a new file exists, the robot is on its dock and nothing
     # is waiting on the console.
     NeatoLocal_TrackSweep($hash);
+
+    # The plan is worth recomputing now, for the same reason -- but only if it
+    # was asked for. It takes minutes in a forked process, and a recording
+    # without scans cannot contribute to it anyway.
+    NeatoLocal_PlanStart($hash, 0)
+        if (AttrVal($name, "planAuto", 0) && ($track->{scans} || 0) > 0);
 
     return undef;
 }
@@ -1728,6 +1842,10 @@ sub NeatoLocal_Set($@) {
                      "NeatoLocal_FlashAborted", $hash);
         InternalTimer(gettimeofday() + 330, "NeatoLocal_FlashWatch", $hash);
         return undef;
+    }
+
+    if ($cmd eq "buildPlan") {
+        return NeatoLocal_PlanStart($hash, 1);
     }
 
     if ($cmd eq "statusRequest") {
@@ -2410,6 +2528,176 @@ sub NeatoLocal_OtaBlocking($) {
     return NeatoLocal_OneLine(NeatoLocal_OtaWork($_[0]));
 }
 
+sub NeatoLocal_PlanBlocking($) {
+    return NeatoLocal_OneLine(NeatoLocal_PlanWork($_[0]));
+}
+
+# One floor plan out of the last few recordings, written beside them so the
+# FTUI component can load the answer instead of the question.
+#
+# Everything about it happens in the forked process: the arithmetic lives in
+# FHEM/lib/NeatoLocalPlan.pm and is required here rather than at the top of
+# this file, so the main process never carries it.
+sub NeatoLocal_PlanWork($) {
+    my ($string) = @_;
+    my ($name, $dir, $device, $sources, $cell, $out) = split("\\|", $string, 6);
+    my $started = time();
+
+    # Be polite. On a single core board this runs for minutes next to the rest
+    # of the house, and nothing is waiting for the result.
+    eval { require POSIX; POSIX::nice(10); };
+
+    my $lib = AttrVal("global", "modpath", ".") . "/FHEM/lib";
+    unshift(@INC, $lib) if (!grep { $_ eq $lib } @INC);
+    eval { require NeatoLocalPlan; 1; }
+        or return "$name|NeatoLocalPlan.pm cannot be loaded from $lib: $@";
+
+    my $dh;
+    opendir($dh, $dir) or return "$name|$dir cannot be read: $!";
+    my @names = sort { $b cmp $a }
+                grep { m/^\Q$device\E-.*\.jsonl$/ } readdir($dh);
+    closedir($dh);
+
+    return "$name|no recordings of $device in $dir -- set trackRuns to 1 to record them"
+        if (!scalar(@names));
+
+    @names = @names[0 .. $sources - 1] if (scalar(@names) > $sources);
+
+    my @surveys;
+    my @used;
+    for my $file (@names) {
+        my $session = NeatoLocalPlan::read_session("$dir/$file");
+        next if (!defined($session) || !scalar(@{ $session->{scans} }));
+        push(@surveys, NeatoLocalPlan::survey($session, { cell => $cell }));
+        push(@used, $file);
+    }
+
+    return "$name|none of the " . scalar(@names) . " recordings has scans -- "
+         . "without mapInterval only the track is recorded, and a track is not a plan"
+        if (!scalar(@surveys));
+
+    my $plan = NeatoLocalPlan::merge_plan(\@surveys, { cell => $cell });
+
+    my @stamp = gmtime(time());
+    my $built = sprintf("%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                        $stamp[5] + 1900, $stamp[4] + 1, $stamp[3],
+                        $stamp[2], $stamp[1], $stamp[0]);
+
+    my $fh;
+    open($fh, ">", "$out.new") or return "$name|$out cannot be written: $!";
+    print $fh NeatoLocalPlan::as_json($plan, \@used, $built);
+    close($fh);
+    # Into place in one step: a panel polling the file must never catch it
+    # half written.
+    rename("$out.new", $out) or return "$name|$out cannot be replaced: $!";
+
+    # The grades of the runs that were left out travel back rather than just
+    # their number. The threshold they were measured against is an assumption,
+    # and a run that is quietly dropped shows up as nothing but a smaller
+    # planRuns than expected.
+    my @dropped = sort { $b <=> $a } map { $_->{score} } @{ $plan->{rejected} };
+
+    return sprintf("%s|OK|%s|%d|%d|%s|%d", $name, $out,
+                   scalar(@{ $plan->{cells} }), $plan->{runs},
+                   join(",", map { sprintf("%.2f", $_) } @dropped),
+                   time() - $started);
+}
+
+# Start a plan run, from "set buildPlan" or after a cleaning run.
+sub NeatoLocal_PlanStart($$) {
+    my ($hash, $manual) = @_;
+    my $name = $hash->{NAME};
+
+    if ($hash->{helper}{planRunning}) {
+        my $age = time() - $hash->{helper}{planRunning};
+        if ($age < $NeatoLocal_planLock) {
+            return $manual ? "a plan has been computed for ${age}s already" : undef;
+        }
+        Log3 $name, 2, "NeatoLocal ($name) - the last plan run left its lock "
+                     . "behind ${age}s ago, taking it over";
+    }
+
+    my $dir     = AttrVal($name, "trackDir", "./www/neato");
+    my $sources = AttrVal($name, "planSources", 8);
+    my $cell    = AttrVal($name, "planCell", 0.10);
+
+    if ($sources !~ m/^\d+$/ || $sources < 1) {
+        my $why = "planSources is '$sources', expected how many recordings go in";
+        Log3 $name, 1, "NeatoLocal ($name) - $why";
+        return $manual ? $why : undef;
+    }
+    if ($cell !~ m/^\d*\.?\d+$/ || $cell <= 0) {
+        my $why = "planCell is '$cell', expected a cell size in metres such as 0.10";
+        Log3 $name, 1, "NeatoLocal ($name) - $why";
+        return $manual ? $why : undef;
+    }
+
+    my $out = "$dir/plan-$name.json";
+    $hash->{helper}{planRunning} = time();
+    Log3 $name, 3, "NeatoLocal ($name) - computing the plan from up to $sources "
+                 . "recordings in $dir, this takes minutes";
+
+    BlockingCall("NeatoLocal_PlanBlocking",
+                 "$name|$dir|$name|$sources|$cell|$out",
+                 "NeatoLocal_PlanDone", $NeatoLocal_planTimeout,
+                 "NeatoLocal_PlanAborted", $hash);
+
+    return undef;
+}
+
+sub NeatoLocal_PlanDone($) {
+    my ($string) = @_;
+    my ($name, $result, $file, $cells, $runs, $dropped, $seconds)
+        = split("\\|", $string, 7);
+    my $hash = $defs{$name};
+
+    return if (!defined($hash));
+    delete $hash->{helper}{planRunning};
+
+    if (!defined($result) || $result ne "OK") {
+        my $why = defined($result) ? $result : "no result";
+        Log3 $name, 1, "NeatoLocal ($name) - no plan: $why";
+        readingsSingleUpdate($hash, "planState", "failed: $why", 1);
+        return undef;
+    }
+
+    # With the grades, not just the count: the threshold a run was measured
+    # against is an assumption, and these numbers are what would settle it. A
+    # 0.44 that was dropped says something quite different from a 0.05.
+    my @scores = grep { length($_) } split(/,/, defined($dropped) ? $dropped : "");
+    my $state = "ok";
+    $state .= sprintf(", %d did not fit (%s)", scalar(@scores), join(", ", @scores))
+        if (scalar(@scores));
+
+    Log3 $name, 3, "NeatoLocal ($name) - plan written to $file: $cells cells "
+                 . "from $runs recordings"
+                 . (scalar(@scores) ? ", " . scalar(@scores) . " did not fit: "
+                                    . join(", ", @scores) : "")
+                 . ", ${seconds}s";
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "planFile", $file);
+    readingsBulkUpdate($hash, "planCells", $cells);
+    readingsBulkUpdate($hash, "planRuns", $runs);
+    readingsBulkUpdate($hash, "planState", $state);
+    readingsEndUpdate($hash, 1);
+
+    return undef;
+}
+
+sub NeatoLocal_PlanAborted($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    delete $hash->{helper}{planRunning};
+    Log3 $name, 1, "NeatoLocal ($name) - the plan run was cut short after "
+                 . "${NeatoLocal_planTimeout}s. Fewer recordings in planSources, "
+                 . "or a bigger planCell, make it shorter.";
+    readingsSingleUpdate($hash, "planState", "timed out", 1);
+
+    return undef;
+}
+
 sub NeatoLocal_FlashWork($) {
     my ($string) = @_;
     my ($name, $port, $image, $ssid, $psk) = split("\\|", $string, 5);
@@ -2915,6 +3203,7 @@ sub NeatoLocal_Get($@) {
         "version"    => [ "GetVersion",       \&NeatoLocal_ParseVersion ],
         "charger"    => [ "GetCharger",       \&NeatoLocal_ParseCharger ],
         "motors"     => [ "GetMotors",        \&NeatoLocal_ParseMotors  ],
+        "accel"      => [ "GetAccel",         \&NeatoLocal_ParseAccel  ],
         "sensors"    => [ "GetAnalogSensors", undef                     ],
         "state"      => [ "GetState",         \&NeatoLocal_ParseState   ],
         "usage"      => [ "GetUsage",         undef                     ],
@@ -3034,6 +3323,17 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>syncTime</b> - sets the robot's scheduler clock from FHEM. Without
         the cloud nothing else keeps that clock right.</li>
     <li><b>button &lt;name&gt;</b> - simulates any UI or IR button press</li>
+    <li><b>buildPlan</b> - computes one floor plan from the last recordings and
+        writes it as plan-&lt;device&gt;.json beside them. Runs in a forked,
+        niced process and takes minutes; the reading <b>planFile</b> names the
+        result. Needs recordings with lidar scans, so trackRuns and
+        mapInterval have to be set.<br>
+        <b>planState</b> carries the grade of every run that was left out, for
+        instance "ok, 1 did not fit (0.33)". The threshold a run is measured
+        against is an assumption and not a measurement, so it is worth logging
+        this reading: over a few weeks it is the series that says whether the
+        threshold sits in the right place. The file itself carries the grades
+        of all runs in its "scores" field.</li>
     <li><b>statusRequest</b> - polls charger, error and motor state</li>
     <li><b>testMode &lt;on|off&gt;</b> - enters/leaves the console test mode.
         <b>While test mode is on the robot ignores its own buttons and will
@@ -3075,6 +3375,17 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>help [command]</b> - returns the robot's own command list. Use this
         to verify the console syntax of your firmware.</li>
     <li><b>raw &lt;command&gt;</b> - sends a command and returns its output</li>
+    <li><b>accel</b> - the angle the robot stands at, as the readings pitch,
+        roll and accelSum. The sensor carries no calibration: a D6 level on its
+        base reports -2.33 / -1.20 degrees at 0.951 g, so the numbers are good
+        for a change and not for an absolute angle. While a run records scans,
+        the same reading is taken just before each one and written into the
+        session file as "tilt". The idea was that a scan taken askew has the
+        floor in it shaped exactly like a wall, which within one revolution
+        cannot be told apart. Measured over a full run it explains nothing --
+        the correlation with stray points is +0.05 -- so there is deliberately
+        no filter on it. See docs/ftui3-map.md, and tools/stray_points.py to
+        redo the measurement on a newer recording.</li>
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>
@@ -3109,6 +3420,16 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>trackKeepDays</b> - how long finished sessions are kept, default 14.
         Swept after each run; 0 keeps them for good. Only files this device
         wrote itself are ever removed</li>
+    <li><b>planAuto</b> - compute the floor plan after every cleaning run,
+        default 0. A run without scans is skipped; there is nothing to build a
+        plan from.</li>
+    <li><b>planSources</b> - how many recordings go into the plan, newest
+        first, default 8. Every one of them costs about a minute, and runs
+        from the same afternoon see the same furniture in the same place and
+        agree for the wrong reason.</li>
+    <li><b>planCell</b> - the cell size of the plan in metres, default 0.10.
+        It is written into the file, so the display uses whatever is set
+        here.</li>
     <li><b>connectTimeout</b> - how long a connection attempt to the bridge may
         take, default 2 seconds. FHEM opens TCP connections synchronously, so
         this is the longest FHEM can stall while the bridge is unreachable --
@@ -3249,6 +3570,17 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>syncTime</b> - stellt die Uhr des Zeitgebers aus FHEM. Ohne Cloud
         haelt sonst nichts mehr diese Uhr richtig.</li>
     <li><b>button &lt;name&gt;</b> - simuliert einen beliebigen Tastendruck</li>
+    <li><b>buildPlan</b> - rechnet aus den letzten Aufzeichnungen einen
+        gemeinsamen Grundriss und legt ihn als plan-&lt;Geraet&gt;.json daneben.
+        Laeuft in einem eigenen, heruntergestuften Prozess und dauert Minuten;
+        das Reading <b>planFile</b> nennt das Ergebnis. Braucht Aufzeichnungen
+        mit Lidar-Scans, also trackRuns und mapInterval.<br>
+        <b>planState</b> nennt die Guete jedes ausgelassenen Laufs, etwa
+        "ok, 1 did not fit (0.33)". Die Schwelle, an der gemessen wird, ist
+        eine Annahme und keine Messung -- dieses Reading mitzuloggen lohnt sich
+        also: ueber ein paar Wochen ist es die Reihe, die sagt, ob die Schwelle
+        richtig liegt. Die Datei selbst traegt die Guete aller Laeufe im Feld
+        "scores".</li>
     <li><b>statusRequest</b> - fragt Ladezustand, Fehler und Motoren ab</li>
     <li><b>testMode &lt;on|off&gt;</b> - schaltet den Testmodus der Konsole.
         <b>Im Testmodus reagiert der Roboter nicht mehr auf seine Tasten und
@@ -3291,6 +3623,18 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>help [Kommando]</b> - liefert die Kommandoliste des Roboters. Damit
         laesst sich die Syntax der eigenen Firmware pruefen.</li>
     <li><b>raw &lt;Kommando&gt;</b> - sendet ein Kommando und gibt die Ausgabe zurueck</li>
+    <li><b>accel</b> - die Neigung des Roboters, als Readings pitch, roll und
+        accelSum. Der Sensor ist nicht kalibriert: ein D6, der waagerecht auf
+        der Basis steht, meldet -2,33 / -1,20 Grad bei 0,951 g. Die Werte taugen
+        also fuer eine Aenderung, nicht fuer einen absoluten Winkel. Waehrend
+        eines Laufs mit Scans wird derselbe Wert unmittelbar vor jedem Scan
+        genommen und als "tilt" in die Sitzungsdatei geschrieben. Der Gedanke
+        war, dass ein schraeg aufgenommener Scan den Fussboden in der Form einer
+        Wand enthaelt, die innerhalb einer Umdrehung nicht zu unterscheiden ist.
+        An einem vollen Lauf gemessen erklaert das nichts -- die Korrelation mit
+        verirrten Punkten liegt bei +0,05 --, es gibt deshalb bewusst keinen
+        Filter darauf. Siehe docs/ftui3-map.md, und tools/stray_points.py, um
+        die Messung auf einer neueren Aufzeichnung zu wiederholen.</li>
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>
@@ -3330,6 +3674,16 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>trackKeepDays</b> - wie lange fertige Sitzungen bleiben, Standard 14.
         Aufgeraeumt wird nach jedem Lauf; 0 behaelt alles. Entfernt werden nur
         Dateien, die dieses Geraet selbst geschrieben hat</li>
+    <li><b>planAuto</b> - nach jeder Reinigung den Grundriss neu rechnen,
+        Standard 0. Ein Lauf ohne Scans wird uebersprungen, aus ihm entsteht
+        kein Grundriss.</li>
+    <li><b>planSources</b> - wie viele Aufzeichnungen in den Grundriss eingehen,
+        die neuesten zuerst, Standard 8. Jede kostet etwa eine Minute, und zwei
+        Laeufe vom selben Nachmittag sehen dieselben Moebel am selben Platz und
+        sind sich aus dem falschen Grund einig.</li>
+    <li><b>planCell</b> - die Zellgroesse des Grundrisses in Metern, Standard
+        0,10. Sie steht in der Datei, die Anzeige uebernimmt also, was hier
+        eingestellt ist.</li>
     <li><b>connectTimeout</b> - wie lange ein Verbindungsversuch zur Bruecke
         dauern darf, Standard 2 Sekunden. FHEM baut TCP-Verbindungen synchron
         auf; das ist also die laengste Zeit, die FHEM stehenbleiben kann,

@@ -37,6 +37,22 @@ jobs:
       - name: Check the track and the map
         run: python3 tools/check_track.py
 
+      # Not a test with an expected answer -- it reports what a recording
+      # contains. It runs here so it keeps working: the negative result it
+      # produced (tilt does not explain the stray points) is written down in
+      # docs/ftui3-map.md, and a claim nobody can re-run is only an opinion.
+      - name: Check the stray point report still runs
+        run: python3 tools/stray_points.py docs/reference-track-botvac-d6.jsonl
+
+      # The floor plan is a seam between two projects: this module computes it,
+      # an FTUI component draws it, and a JSON file is all they share. This
+      # builds the reference case from scratch and holds the result against
+      # what the JavaScript implementation makes of the same three recordings.
+      # It takes about a minute -- the search tries every rotation, which is
+      # the whole point of doing it here rather than in a browser.
+      - name: Check the floor plan against the reference case
+        run: perl tools/check_plan.pl
+
   # One target, the same one the published image is built for. The ESP8266 is
   # gone: its single UART costs the console the sketch needs for setup and
   # diagnosis, and keeping a second platform alive meant a conditional at every

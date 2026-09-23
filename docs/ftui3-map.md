@@ -44,7 +44,7 @@ Kommentare (nur in den Fixtures im Repo, nicht in echten Aufzeichnungen).
 ```json
 {"device":"Staubsauger","started":"2026-09-20_11-59-11","module":"0.19.0","unit":"m"}
 {"t":64766.91,"x":0.000,"y":0.000,"th":0.0}
-{"scan":{"x":1.204,"y":0.418,"th":92.0,"speed":5.02,"pose":"Smooth","pts":[[0,1284],[1,1266]]}}
+{"scan":{"x":1.204,"y":0.418,"th":92.0,"speed":5.02,"pose":"Smooth","tilt":[-2.33,-1.20,0.951],"pts":[[0,1284],[1,1266]]}}
 {"summary":{"points":549,"scans":50,"distance":137.8,"rotation":20500,"seconds":1500}}
 ```
 
@@ -54,6 +54,8 @@ Kommentare (nur in den Fixtures im Repo, nicht in echten Aufzeichnungen).
 * **Scan** – eine je Lidar-Umdrehung. `pts` sind `[Winkel in Grad, Entfernung
   in mm]`, gemessen von der Pose **in derselben Zeile**. `speed` ist die
   Drehzahl des Lidar in Hz, `pose` die verwendete Positionsquelle.
+  `tilt` ist optional (ab Modul 0.22.0) und trägt `[Pitch, Roll, |a|]` in Grad
+  bzw. g – siehe unten. Ältere Aufzeichnungen haben es nicht.
 * **Zusammenfassung** – einmal am Ende. Fehlt, solange der Lauf noch läuft;
   ihr Vorhandensein ist das Kennzeichen einer abgeschlossenen Sitzung.
 
@@ -130,6 +132,117 @@ unkritisch, bei den größeren Mengen aber ein Kandidat für einen Worker.
 * `tools/check_track.py` – prüft Format, Konvention und Strahlengang
 * `docs/reference-track-botvac-d6.jsonl` – echte, ausgedünnte Aufzeichnung.
   **Damit lässt sich ohne Roboter und ohne FHEM entwickeln.**
+
+## Schräglage: die Theorie, und warum sie nicht stimmt
+
+Vereinzelt liegen Punkte **hinter** einer Wand und gegenüber davon einer mitten
+im Raum. Die naheliegende Erklärung: der Roboter arbeitet sich an Engstellen
+hoch, steht schräg, und die Scanebene kippt mit.
+
+Die Geometrie dazu ist sauber. Zwei Ebenen schneiden sich in einer Geraden, die
+gekippte Scanebene schneidet den Boden, und eine Gerade ist in Polarkoordinaten
+`d/cos(a)` – dieselbe Form wie eine echte Wand. Bei 4° Neigung und 80 mm
+Lidar-Höhe stimmt das auf zwei Millimeter. Der Boden erscheint bei
+`h / sin(Neigung)`:
+
+| Neigung | Boden erscheint bei |
+|---|---|
+| 1° | 4,6 m |
+| 2° | 2,3 m |
+| 3° | 1,5 m |
+| 5° | 0,9 m |
+
+Also mitten im Wohnungsmaß, und innerhalb einer Umdrehung von einer echten Wand
+nicht zu unterscheiden – weder über die Form noch über die Entfernung. Der Weg
+zur Wand wird dabei übrigens fast nicht länger: bei 2° und 3 m sind es 1,8 mm.
+Punkte *hinter* einer Wand könnten nur entstehen, wenn der nach oben laufende
+Strahl über ein niedriges Hindernis hinweggeht.
+
+### Gemessen: sie kommt nicht vor
+
+Deshalb schreibt das Modul seit 0.22.0 die Neigung mit (Feld `tilt`, siehe
+oben). Der erste vollständige Lauf damit – 23.09.2026, 231 Scans, 61 482
+Punkte, jeder Scan mit Neigung – sagt:
+
+| Prüfung | Ergebnis |
+|---|---|
+| Neigung ↔ Anteil unbestätigter Punkte | **+0,002** |
+| Neigung ↔ Anteil Irrläufer | **+0,051** |
+| Vorhergesagter Bodenabstand gegen den Nachbarscan | hält nicht |
+
+Die dritte sah zunächst gut aus: ein Scan mit 3,72° Neigung hatte 44 % seiner
+Punkte dort, wo der Boden liegen müsste. Aber der Nachbarscan 0,4 m weiter, mit
+0,24° Neigung, hatte 34 %, und anderswo hatte der weniger gekippte Nachbar
+*mehr*. Der Anteil hängt am Ort, nicht an der Schräglage – das Testfenster hatte
+eine Entfernung erwischt, bei der in dem Raum eine Wand steht.
+
+Die Neigung schwankt dabei durchaus: über der Ruhelage des Laufs im Median
+0,9°, im 90. Perzentil 1,9°, maximal 5,0°. Sie ist da, sie richtet nur keinen
+messbaren Schaden an.
+
+### Was die Irrläufer wirklich sind
+
+1196 von 61 482 Punkten (1,95 %) liegen in Zellen, die andere Strahlen oft
+durchqueren und fast nie treffen. Ihr Profil:
+
+* **Gruppengröße 1,9 Punkte.** Eine gekippte Ebene ergäbe einen zusammen­hängenden
+  Bogen aus Dutzenden. Das hier sind Einzelgänger.
+* **Weiter weg als der Durchschnitt:** Median 2182 mm gegen 1030 mm. (Teilweise
+  definitionsbedingt – das Kriterium bevorzugt selten getroffene Zellen, und
+  ferne Zellen werden seltener getroffen.)
+* **Nie am selben Fleck:** 879 betroffene Zellen, keine dreimal. Also kein
+  Spiegel, keine Glastür, kein festes Möbel.
+
+Einzeln, weit, nicht wiederkehrend – die Signatur schwacher Rückläufer auf große
+Entfernung, dieselbe Familie wie die 16,8-m-Zeilen, die `mapMaxRange` abfängt.
+Dasselbe Profil zeigt `docs/reference-track-botvac-d6.jsonl` von einem anderen
+Tag, aufgezeichnet bevor es das Feld `tilt` überhaupt gab.
+
+**Und das Belegungsgitter fängt sie bereits ab.** Per Konstruktion liegen sie in
+Zellen mit mindestens zehn Durchquerungen und höchstens zwei Treffern, also bei
+2/12 = 0,17 unter der Wandschwelle von 0,25. In der Punktwolke sind sie zu
+sehen, im Gitter nicht.
+
+### Also kein Filter
+
+Ein Filter auf die Neigung würde gute Scans wegwerfen, ohne etwas zu retten –
+bei 8 % der Scans über 2° wären das über zehn je Lauf für nichts. Es gibt
+deshalb bewusst **kein** `mapMaxTilt`.
+
+Das Feld `tilt` bleibt trotzdem: ein Lauf in einer Wohnung ist kein Beweis für
+alle, und die Messung kostet eine kurze Abfrage alle paar Sekunden. Wer sie auf
+einer neueren Aufzeichnung wiederholen will:
+
+```sh
+python3 tools/stray_points.py /opt/fhem/www/neato/Staubsauger-....jsonl
+```
+
+Kippt das Ergebnis bei mehr Läufen, gehört dieser Abschnitt nachgezogen – und
+dann liegt auch die Schwelle darin, statt geraten zu sein.
+
+## Mehrere Läufe: der gemeinsame Grundriss
+
+Das oben Beschriebene ist ein einzelner Lauf. Mehrere zusammengelegt ergeben
+einen Grundriss, und den rechnet **das Modul**, nicht die Anzeige:
+
+* Datei: `plan-<Gerät>.json` in `trackDir`, also neben den Aufzeichnungen
+* Reading: **`planFile`** nennt den Pfad, genau wie `trackFile` den der
+  laufenden Sitzung – die Komponente kann ihn binden, statt ihn als Attribut
+  eingetragen zu bekommen
+* dazu `planCells` (wie viele Zellen), `planRuns` (wie viele Aufzeichnungen
+  eingegangen sind) und `planState` (`ok`, `ok, 1 did not fit (0.33)`,
+  `failed: …`) – die Zahl in Klammern ist die Güte, mit der der ausgelassene
+  Lauf eingepasst worden wäre
+* die Güte **aller** Läufe steht im Feld `scores` der Plandatei; die Anzeige
+  braucht es nicht, es ist Beweissicherung für die Frage, ob die Schwelle von
+  0,45 an der richtigen Stelle liegt
+* gerechnet wird auf `set <Gerät> buildPlan` oder, mit `attr <Gerät> planAuto 1`,
+  nach jeder Reinigung
+
+Dateiformat und Verfahren stehen in `docs/plan-format.md` des Repos
+`chrisse1/fhem-ftui-components-neatomaps`; die Referenzfassung dieser Seite
+liegt hier in `FHEM/lib/NeatoLocalPlan.pm` und wird von `tools/check_plan.pl`
+gegen die JavaScript-Fassung gehalten.
 
 ## Was die Karte nicht ist
 

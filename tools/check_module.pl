@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 308;
+use Test::More tests => 369;
 
 package main;
 
@@ -1184,7 +1184,8 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     my @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
     @sent = map { my $c = $_; $c =~ s/\s+$//; $c } @sent;
 
-    is($sent[0], "GetRobotPos Smooth", "the corrected pose is the default");
+    is((grep { m/^GetRobotPos/ } @sent)[0], "GetRobotPos Smooth",
+       "the corrected pose is the default");
     is(scalar(grep { $_ eq "GetLDSScan" } @sent), 1, "a scan goes with it");
     is(scalar(grep { $_ eq "GetRobotPos Smooth" } @sent), 2,
        "and the pose twice, so the scan's staleness is visible");
@@ -1204,7 +1205,8 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     @WRITTEN = ();
     NeatoLocal_TrackTimer($ph);
     @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
-    like($sent[0], qr/GetRobotPos Raw/, "Raw can still be asked for");
+    like((grep { m/^GetRobotPos/ } @sent)[0], qr/GetRobotPos Raw/,
+         "Raw can still be asked for");
 
     # Anything else falls back rather than being sent to the robot.
     $attr{"pos"}{trackPose} = "nonsense";
@@ -1213,8 +1215,285 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     @WRITTEN = ();
     NeatoLocal_TrackTimer($ph);
     @sent = (@WRITTEN, map { $_->{cmd} } @{$ph->{helper}{queue}});
-    like($sent[0], qr/GetRobotPos Smooth/, "and a bad value does not reach it");
+    like((grep { m/^GetRobotPos/ } @sent)[0], qr/GetRobotPos Smooth/,
+         "and a bad value does not reach it");
 
     RemoveInternalTimer($ph, "NeatoLocal_TrackTimer");
     NeatoLocal_TrackStop($ph);
+}
+
+# --- the floor plan --------------------------------------------------------
+# The arithmetic lives in FHEM/lib/NeatoLocalPlan.pm and is checked by
+# tools/check_plan.pl against the reference case. What is checked here is the
+# wiring: who starts a run, with which arguments, and what comes back.
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my ($plh, $plr) = mkdev("plan NeatoLocal 192.168.1.42:23");
+    $attr{"plan"}{trackDir} = $dir;
+    @BLOCKING = ();
+
+    NeatoLocal_Set($plh, "plan", "buildPlan");
+    is(scalar(@BLOCKING), 1, "buildPlan runs in the background");
+    is($BLOCKING[0][0], "NeatoLocal_PlanBlocking", "with the plan worker");
+    is($BLOCKING[0][1], "plan|$dir|plan|8|0.1|$dir/plan-plan.json",
+       "and is told where the recordings are, how many, the cell and where it goes");
+    is($BLOCKING[0][3], 1800, "it may take half an hour");
+
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/has been computed/,
+         "a second run is refused while one is going");
+
+    # A run that was killed -- by a restart, by the timeout -- must not lock
+    # the device for good.
+    $plh->{helper}{planRunning} = time() - 3000;
+    @BLOCKING = ();
+    is(NeatoLocal_Set($plh, "plan", "buildPlan"), undef,
+       "a lock left behind by a killed run is not permanent");
+    is(scalar(@BLOCKING), 1, "and the next run starts");
+
+    # Nonsense in the attributes is refused before a process is forked for it,
+    # and says what was expected rather than just failing.
+    delete $plh->{helper}{planRunning};
+    $attr{"plan"}{planSources} = "viele";
+    @BLOCKING = ();
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/how many recordings/,
+         "planSources has to be a number");
+    is(scalar(@BLOCKING), 0, "and nothing is forked for it");
+
+    $attr{"plan"}{planSources} = 3;
+    $attr{"plan"}{planCell} = "grob";
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/cell size in metres/,
+         "planCell too");
+    is(scalar(@BLOCKING), 0, "still nothing forked");
+
+    $attr{"plan"}{planCell} = 0.05;
+    delete $plh->{helper}{planRunning};
+    @BLOCKING = ();
+    NeatoLocal_Set($plh, "plan", "buildPlan");
+    is($BLOCKING[0][1], "plan|$dir|plan|3|0.05|$dir/plan-plan.json",
+       "and both attributes reach the worker");
+
+    # What comes back.
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4|0.33|97");
+    is(ReadingsVal("plan", "planFile", ""), "$dir/plan-plan.json",
+       "the file is announced as a reading, so a panel can bind it");
+    is(ReadingsVal("plan", "planCells", ""), 1816, "with how many cells it has");
+    is(ReadingsVal("plan", "planRuns", ""), 4, "and how many runs went in");
+    ok(!$plh->{helper}{planRunning}, "and the lock is released");
+
+    # The grade a dropped run reached, not just that one was dropped. The
+    # threshold it was measured against is an assumption, and 0.44 says
+    # something quite different from 0.05 about whether it is in the right
+    # place. Without the number a lost run looks like nothing at all.
+    is(ReadingsVal("plan", "planState", ""), "ok, 1 did not fit (0.33)",
+       "a run that did not fit is said out loud, with the grade it got");
+
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4||97");
+    is(ReadingsVal("plan", "planState", ""), "ok",
+       "and nothing dropped stays plain ok");
+
+    NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|2|0.41,0.33|97");
+    is(ReadingsVal("plan", "planState", ""), "ok, 2 did not fit (0.41, 0.33)",
+       "several of them are all named, worst last");
+
+    $plh->{helper}{planRunning} = time();
+    NeatoLocal_PlanDone("plan|no recordings of plan in $dir");
+    like(ReadingsVal("plan", "planState", ""), qr/^failed: no recordings/,
+         "a failure says what was wrong");
+    ok(!$plh->{helper}{planRunning}, "and releases the lock too");
+    is(ReadingsVal("plan", "planFile", ""), "$dir/plan-plan.json",
+       "the plan from before is still the plan -- a failed run does not erase it");
+
+    $plh->{helper}{planRunning} = time();
+    NeatoLocal_PlanAborted($plh);
+    like(ReadingsVal("plan", "planState", ""), qr/timed out/, "a cut short run says so");
+    ok(!$plh->{helper}{planRunning}, "and does not leave the lock behind");
+}
+
+# After a cleaning run the plan is worth recomputing -- but only if it was
+# asked for, and only if the run has scans. Without mapInterval a recording is
+# a track, and a track is not a plan.
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    for my $case ([0, 5, 0, "planAuto off: nothing is computed after a run"],
+                  [1, 0, 0, "planAuto on but no scans: nothing to build a plan from"],
+                  [1, 5, 1, "planAuto on and scans recorded: the plan is recomputed"]) {
+        my ($auto, $scans, $expected, $what) = @$case;
+
+        my ($ah, $ar) = mkdev("auto NeatoLocal 192.168.1.42:23");
+        $attr{"auto"}{trackDir} = $dir;
+        $attr{"auto"}{planAuto} = $auto;
+        NeatoLocal_TrackStart($ah);
+        $ah->{helper}{track}{scans} = $scans;
+
+        @BLOCKING = ();
+        NeatoLocal_TrackStop($ah);
+        is(scalar(grep { $_->[0] eq "NeatoLocal_PlanBlocking" } @BLOCKING), $expected, $what);
+        delete $ah->{helper}{planRunning};
+    }
+}
+
+# The worker itself, once, on a recording small enough that the whole thing
+# runs in a moment: a single run is its own frame, so nothing has to be fitted
+# and only reading, gridding and writing are left. What this pins down is the
+# path from a folder of recordings to a file on disk, including the rename that
+# keeps a panel from ever reading half a plan.
+{
+    use File::Temp qw(tempdir);
+    use JSON::PP;
+    my $dir = tempdir(CLEANUP => 1);
+
+    open(my $rec, ">", "$dir/w-2026-09-20_10-00-00.jsonl") or die($!);
+    print $rec "{\"device\":\"w\",\"started\":\"2026-09-20_10-00-00\",\"unit\":\"m\"}\n";
+    # Four beams from two places, far enough apart to make more than one cell.
+    for my $at (0, 1) {
+        print $rec "{\"scan\":{\"x\":$at,\"y\":0,\"th\":0,\"pts\":["
+                 . "[0,2000],[90,2000],[180,2000],[270,2000]]}}\n";
+    }
+    print $rec "{\"summary\":{\"points\":2,\"scans\":2,\"distance\":1.0,"
+             . "\"rotation\":0,\"seconds\":10}}\n";
+    close($rec);
+
+    my $out = "$dir/plan-w.json";
+    my $result = NeatoLocal_PlanWork("w|$dir|w|8|0.1|$out");
+    my ($who, $state, $file, $cells, $runs) = split(/\|/, $result);
+
+    is($state, "OK", "the worker builds a plan from a folder of recordings")
+        or diag($result);
+    is($file, $out, "and says where it put it");
+    is($runs, 1, "one recording, one run in the plan");
+    ok($cells > 0, "and it has cells in it");
+    ok(-e $out && !-e "$out.new", "the file is in place and the half written one is gone");
+
+    my $written = eval {
+        open(my $fh, "<", $out) or die($!);
+        local $/ = undef;
+        JSON::PP->new->decode(<$fh>);
+    };
+    ok(ref($written) eq "HASH", "what was written is JSON") or diag($@);
+    is($written->{runs}, 1, "with the number of runs the component needs");
+    is($written->{cell}, 0.1, "and the cell size, so both sides use the same one");
+    is(scalar(@{ $written->{scores} }), 1, "the grade of every run that was offered");
+    is($written->{scores}[0]{score}, 1, "the frame run scores 1 by definition");
+    ok($written->{scores}[0]{used}, "and it is in the plan");
+    is($written->{scores}[0]{file}, "w-2026-09-20_10-00-00.jsonl", "named by its file");
+    is(scalar(@{ $written->{cells} }), $cells, "and every cell that was counted");
+    is(scalar(@{ $written->{cells}[0] }), 4, "each one as [ix, iy, walls, seen]");
+    ok($written->{cells}[0][0] == int($written->{cells}[0][0]),
+       "cell indices, not metres");
+
+    # A folder without recordings, and one whose recordings have no scans, are
+    # the two ways this goes wrong in practice. Both have to say which it was.
+    my $empty = tempdir(CLEANUP => 1);
+    like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/no recordings/,
+         "an empty folder says there is nothing to build from");
+
+    open(my $bare, ">", "$empty/w-2026-09-20_11-00-00.jsonl") or die($!);
+    print $bare "{\"device\":\"w\",\"started\":\"2026-09-20_11-00-00\",\"unit\":\"m\"}\n";
+    print $bare "{\"t\":1.0,\"x\":0,\"y\":0,\"th\":0}\n";
+    close($bare);
+    like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/mapInterval/,
+         "and a track without scans points at the attribute that records them");
+}
+
+# --- the tilt of the scan plane --------------------------------------------
+# A scan taken while the robot sits askew is not noise. The tilted plane cuts
+# the floor along a straight line, so the floor comes back shaped exactly like
+# a wall -- at h/sin(angle), which is one to two metres at the two or three
+# degrees a robot picks up working its way through a narrow spot. Inside one
+# revolution that cannot be told from a real wall, so the angle is recorded
+# with the scan rather than inferred from it afterwards.
+{
+    # Verbatim from a BotVac D6 standing level on its base, docs/reference-dump.
+    my $answer = "Label,Value\n"
+               . "PitchInDegrees, -2.33\n"
+               . "RollInDegrees, -1.20\n"
+               . "XInG, 0.039\n"
+               . "YInG,-0.020\n"
+               . "ZInG, 0.950\n"
+               . "SumInG, 0.951\n";
+
+    my ($pitch, $roll, $sum) = NeatoLocal_ReadAccel($answer);
+    is($pitch, -2.33, "pitch is read out of the accelerometer answer");
+    is($roll, -1.20, "roll too");
+    is($sum, 0.951, "and the magnitude the sensor felt");
+
+    # It travels along because an accelerometer measures every acceleration,
+    # not just gravity: while the robot pulls away the apparent angle tilts
+    # without the robot tilting. Only the magnitude tells the two apart.
+    ok($sum < 1, "which on a level robot is not 1 g -- the sensor is uncalibrated");
+    ok(abs($pitch) > 1, "and level is not zero degrees either");
+
+    is(scalar(NeatoLocal_ReadAccel("Label,Value\nXInG, 0.039\n")), undef,
+       "an answer without angles yields nothing rather than a guess");
+    is(scalar(NeatoLocal_ReadAccel(undef)), undef, "as does no answer at all");
+
+    my ($gh, $gr) = mkdev("acc NeatoLocal 192.168.1.42:23");
+    NeatoLocal_ParseAccel($gh, undef, $answer);
+    is(ReadingsVal("acc", "pitch", ""), -2.33, "get accel sets a reading");
+    is(ReadingsVal("acc", "roll", ""), -1.20, "one per axis");
+    is(ReadingsVal("acc", "accelSum", ""), 0.951, "and the magnitude with them");
+}
+
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my ($th, $tr) = mkdev("tilt NeatoLocal 192.168.1.42:23");
+    $attr{"tilt"}{trackDir} = $dir;
+    $attr{"tilt"}{mapInterval} = 5;
+    NeatoLocal_TrackStart($th);
+
+    # The angle is asked right before the scan, so the two describe the same
+    # moment as nearly as the console allows.
+    $th->{helper}{queue} = [];
+    delete $th->{helper}{pending};
+    delete $th->{helper}{track}{lastScan};
+    @WRITTEN = ();
+    NeatoLocal_TrackTimer($th);
+    my @sent = (@WRITTEN, map { $_->{cmd} } @{$th->{helper}{queue}});
+    @sent = map { my $c = $_; $c =~ s/\s+$//; $c } @sent;
+    is(scalar(grep { $_ eq "GetAccel" } @sent), 1, "a scan is preceded by the angle");
+
+    my ($atAccel) = grep { $sent[$_] eq "GetAccel" } (0 .. $#sent);
+    my ($atScan)  = grep { $sent[$_] eq "GetLDSScan" } (0 .. $#sent);
+    ok($atAccel < $atScan, "asked before the scan, not after it");
+
+    # Ahead of the pose, not between pose and scan: those two have to stay
+    # next to each other. A scan is only worth anything against the position
+    # it was measured from, and the angle would push that position one console
+    # round trip further into the past.
+    like($sent[$atScan - 1], qr/^GetRobotPos/,
+         "and the pose still comes directly before the scan");
+
+    my $scan = "AngleInDegrees,DistInMM,Intensity,ErrorCodeHEX\n"
+             . "0,1000,100,0\n90,2000,100,0\n180,1500,100,0\n"
+             . "ROTATION_SPEED,5.02\n";
+
+    # With the angle: it lands in the record.
+    NeatoLocal_TrackAccel($th, undef, "PitchInDegrees, -7.10\nRollInDegrees, 3.40\n"
+                                    . "SumInG, 0.983\n");
+    NeatoLocal_ParseScan($th, undef, $scan);
+
+    # Without it -- the query failed, or the answer was unreadable. The field
+    # has to be absent rather than repeated from last time: a stale angle looks
+    # exactly as trustworthy as a fresh one and would be worse than none.
+    NeatoLocal_ParseScan($th, undef, $scan);
+
+    NeatoLocal_TrackStop($th);
+
+    open(my $fh, "<", ReadingsVal("tilt", "trackFile", "")) or die($!);
+    my @scans = grep { m/"scan"/ } <$fh>;
+    close($fh);
+
+    is(scalar(@scans), 2, "two scans were recorded");
+    like($scans[0], qr/"tilt":\[-7\.10,3\.40,0\.983\]/,
+         "the first carries the angle the robot stood at");
+    like($scans[0], qr/"pose":"Smooth","tilt":\[.*\],"pts":/,
+         "between the pose and the points, where a reader looks for it");
+    unlike($scans[1], qr/tilt/,
+           "the second has none rather than the one from before it");
 }

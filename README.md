@@ -122,6 +122,7 @@ Es kann immer nur ein Prozess den Port offen haben – ein laufendes
 | `button <name>` | beliebigen Tastendruck simulieren |
 | `flashESP [<image>]` | Brücken-Firmware auf ein Board am USB-Port schreiben |
 | `wifiESP <ssid> <passwort>` | einem frisch geflashten Board die WLAN-Zugangsdaten übergeben |
+| `buildPlan` | aus den letzten Aufzeichnungen einen gemeinsamen Grundriss rechnen |
 | `statusRequest` | Zustand sofort abfragen |
 | `reconnect` | Verbindung neu aufbauen |
 | `testMode on\|off` | Diagnosemodus der Konsole, siehe unten |
@@ -142,6 +143,7 @@ und sendet bei Shutdown, Löschen und `disable` immer `TestMode Off`.
 | `battery` | Messwerte der Smart Battery |
 | `warranty` | Lebensdauerzähler |
 | `settings` | Benutzereinstellungen |
+| `accel` | Neigung des Roboters: Readings `pitch`, `roll`, `accelSum` |
 | `motors`, `sensors`, `usage`, `wifiStatus` | Rohdaten |
 | `serialPorts` | serielle Schnittstellen des Rechners mit ihren by-id-Namen |
 | `raw <Kommando>` | beliebiges Konsolenkommando |
@@ -472,6 +474,114 @@ Zellen rund 52 000 Zellen, ob 14 000 oder 400 000 Punkte hineinfallen. Mehr
 Messungen machen es nicht größer, nur sicherer – der Grund, warum sich ein
 kleineres `mapInterval` lohnt, obwohl die Datei linear wächst.
 
+### Aus mehreren Läufen ein Grundriss
+
+Ein einzelner Lauf ist die Karte *dieses Laufs*, nicht der Wohnung: eigener
+Nullpunkt, eigene Nordrichtung, und nur die Räume, in die der Roboter an dem
+Tag kam. Mehrere übereinandergelegt können zweierlei, was keiner allein kann –
+fehlende Wände ergänzen und über jede Zelle abstimmen lassen. Was drei von vier
+Läufen Wand nennen, ist eine Wand; was einer Wand nennt, während die anderen an
+dieselbe Stelle sahen und Boden fanden, war der Wäscheständer.
+
+```
+attr Staubsauger planAuto 1
+set Staubsauger buildPlan
+```
+
+Das Ergebnis ist eine JSON-Datei neben den Aufzeichnungen,
+`plan-<Gerät>.json`, und das Reading `planFile` nennt sie. Die FTUI-Komponente
+`<ftui-neato-map view="plan">` lädt sie und zeichnet sie; Dateiformat und
+Verfahren stehen in `docs/plan-format.md` des Repos
+[fhem-ftui-components-neatomaps](https://github.com/chrisse1/fhem-ftui-components-neatomaps).
+
+| Attribut | Vorgabe | Bedeutung |
+|---|---|---|
+| `planAuto` | 0 | nach jeder Reinigung neu rechnen |
+| `planSources` | 8 | wie viele Aufzeichnungen eingehen, die neuesten zuerst |
+| `planCell` | 0.10 | Zellgröße in Metern; steht in der Datei, die Anzeige übernimmt sie |
+
+**Es dauert.** Jeder Lauf wird gegen den Rahmen gedreht und geschoben, bis er
+passt, und zwar über *alle* Drehungen – gemessen rund eine Minute je
+Aufzeichnung auf einem gewöhnlichen Rechner, auf einem kleinen Board
+entsprechend länger. Das läuft in einem eigenen, heruntergestuften Prozess;
+FHEM selbst hält nichts an. Wer es kürzer braucht, nimmt weniger
+`planSources`.
+
+Läufe, die nicht passen, werden **abgelehnt** statt hineingezwungen – eine
+andere Etage in denselben Rahmen zu pressen zieht Wände quer durch Räume.
+
+```
+planState   ok
+            ok, 1 did not fit (0.33)
+            ok, 2 did not fit (0.41, 0.33)
+            failed: <Grund>
+```
+
+Die Zahl in Klammern ist die erreichte Güte. **Dieses Reading lohnt sich
+mitzuloggen:** die Schwelle, unter der ein Lauf verworfen wird (0,45), ist eine
+Annahme und keine Messung, und die Belege widersprechen sich noch – drei echte
+Läufe derselben Wohnung kamen auf 0,64 bis 1,0, ein Teillauf gegen einen vollen
+aber auf 0,33. Über ein paar Wochen ist `planState` die Reihe, die das
+entscheidet. Ein `0.44`, das durchfiel, sagt etwas ganz anderes als ein `0.05`.
+
+Dieselben Zahlen stehen für alle Läufe im Feld `scores` der Plandatei:
+
+```json
+"scores": [
+  { "file": "Staubsauger-2026-09-21_10-00-19.jsonl", "score": 1,    "used": true  },
+  { "file": "Staubsauger-2026-09-20_11-00-10.jsonl", "score": 0.33, "used": false }
+]
+```
+
+Von Hand, ohne FHEM, geht dasselbe mit
+
+```sh
+perl tools/neato_plan.pl /opt/fhem/www/neato Staubsauger
+```
+
+### Irrläufer, und die Schräglage, die nicht schuld ist
+
+Vereinzelt liegen Punkte hinter einer Wand und gegenüber davon einer mitten im
+Raum. Die naheliegende Erklärung ist, dass sich der Roboter an Engstellen
+hocharbeitet und die Scanebene mitkippt – dann schneidet sie den Boden, und
+zwei Ebenen schneiden sich in einer Geraden, die in Polarkoordinaten `d/cos(a)`
+ist, also genau die Form einer Wand. Bei 4° und 80 mm Lidar-Höhe stimmt das auf
+zwei Millimeter, und der Boden läge bei `h/sin(Neigung)`, bei 2–5° also 0,9 bis
+2,3 m – mitten im Wohnungsmaß.
+
+Deshalb schreibt das Modul seit 0.22.0 die Neigung mit: jeder Scan trägt
+`"tilt":[Pitch, Roll, |a|]`, gemessen mit `GetAccel` unmittelbar davor. Von Hand
+geht `get Staubsauger accel`, was die Readings `pitch`, `roll` und `accelSum`
+setzt.
+
+**Gemessen stimmt die Erklärung nicht.** Der erste vollständige Lauf damit –
+231 Scans, 61 482 Punkte, jeder mit Neigung – ergibt eine Korrelation zwischen
+Neigung und Irrläufern von **+0,05**, und über einen anderen Weg gerechnet
++0,002. Die Neigung ist dabei durchaus vorhanden: über der Ruhelage im Median
+0,9°, maximal 5,0°. Sie richtet nur keinen messbaren Schaden an.
+
+Die Irrläufer (1,95 % der Punkte) sehen stattdessen so aus: **Gruppen von 1,9
+Punkten** statt zusammenhängender Bögen, **weiter weg** als der Durchschnitt
+(Median 2182 gegen 1030 mm) und **nie zweimal am selben Fleck** – 879 Zellen,
+keine dreimal. Also einzelne schwache Rückläufer auf große Entfernung, kein
+Spiegel und keine gekippte Ebene. Dasselbe Profil zeigt eine Aufzeichnung von
+einem anderen Tag, die entstand, bevor es das Feld überhaupt gab.
+
+**Das Belegungsgitter fängt sie schon ab:** sie liegen per Konstruktion in
+Zellen mit vielen Durchquerungen und kaum Treffern, also unter der Schwelle von
+0,25. In der Punktwolke sieht man sie, im Gitter nicht.
+
+Einen `mapMaxTilt`-Filter gibt es deshalb bewusst **nicht** – er würde gute
+Scans wegwerfen, ohne etwas zu retten. Die Aufzeichnung bleibt trotzdem, ein
+Lauf in einer Wohnung ist kein Beweis für alle. Nachrechnen lässt sich das auf
+jeder Sitzung mit
+
+```sh
+python3 tools/stray_points.py /opt/fhem/www/neato/Staubsauger-....jsonl
+```
+
+Ausführlich steht die Messung in [docs/ftui3-map.md](docs/ftui3-map.md).
+
 ### Explore und Persistent brauchen die App
 
 `startCleaning explore` und `startCleaning persistent` beschreibt die Hilfe des
@@ -688,6 +798,20 @@ python3 tools/check_sim.py    # Simulator: Protokoll und Zustandsübergänge
 python3 tools/check_dump.py   # Dump-Werkzeug, seriell über ein PTY und über TCP
 python3 tools/check_track.py  # Sitzungsformat und Koordinatenkonvention
 python3 tools/check_partition.py  # Partitionstabelle des Images
+python3 tools/stray_points.py <sitzung.jsonl>   # kein Test: Irrläufer einer Aufzeichnung
+perl tools/check_plan.pl      # Grundriss gegen den Referenzfall (dauert eine Minute)
+perl tools/check_plan.pl --quick   # davon nur die schnellen Prüfungen
+```
+
+`check_plan.pl` baut den Referenzfall aus `docs/reference-plan/` neu und hält
+das Ergebnis gegen das, was die JavaScript-Referenz aus denselben drei
+Aufzeichnungen macht. Verlangt wird keine Gleichheit bis auf die Zelle – die
+Schranken stehen in `docs/plan-format.md` des Komponenten-Repos. Dieselbe
+Prüfung von der anderen Seite:
+
+```sh
+node tools/check-plan.mjs /opt/fhem/www/neato/plan-Staubsauger.json \
+     --against test/fixtures/plan/plan.json
 ```
 
 Alle laufen ohne FHEM-Installation und ohne Roboter. Die Testdaten sind
