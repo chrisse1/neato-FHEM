@@ -716,6 +716,18 @@ Dieses Modul enthält eine eigenständige Perl-Umsetzung, die gegen deren
 C++-Original auf bekannten Werten geprüft ist. Alle Einzelheiten stehen in
 [docs/serial-commands.md](docs/serial-commands.md).
 
+## No-Go-Linien
+
+Kurz: es gibt keinen bekannten Weg, dem Roboter Zonen zu übergeben. Er konnte
+sie in der App, aber sie kamen über seine Cloud – `GetVersion` nennt sie im
+Klartext, `nucleo.neatocloud.com`, und die ist abgeschaltet. Die Konsole hat in
+44 Kommandos nichts mit Karten zu tun.
+
+Was bekannt ist, was nur unbelegt ist und welche Wege offen bleiben, steht in
+[docs/serial-commands.md](docs/serial-commands.md#no-go-linien-was-bekannt-ist-und-was-nicht)
+– einschließlich der Gründe, warum Selbstfahren teuer und Magnetband die
+einzige Lösung ist, die heute funktioniert.
+
 ## Was nicht geht
 
 * **No-Go-Linien und Zonenreinigung.** Sie wurden in der App verwaltet und sind
