@@ -406,6 +406,12 @@ in TestMode" – und in TestMode reinigt der Roboter nicht und reagiert nicht au
 seine Tasten. Während der Reinigung ist der Scan also gratis zu haben, im
 Leerlauf nicht zu bezahlen.
 
+`trackPose` bestimmt, aus welcher Position die Spur entsteht: `Smooth`
+(Standard, die vom Roboter korrigierte Position) oder `Raw` – die Radencoder
+allein, die über einen Lauf driften. Gemessen macht das den Unterschied
+zwischen 0,268 und 0,156 belegten Zellen je Punkt; `Raw` ist nur zum
+Vergleichen da.
+
 `mapInterval` (Standard 0 = aus) holt daher alle *n* Sekunden einen
 `GetLDSScan` und legt ihn neben die Spur:
 
@@ -681,6 +687,7 @@ Die Reading-Namen folgen bewusst denen von `74_BOTVAC.pm`, damit bestehende
 | `connectTimeout` | 2 | Obergrenze für einen Verbindungsversuch |
 | `espPort` | `/dev/ttyACM0` | USB-Port des Brücken-Boards beim Flashen |
 | `espImage` | – | Image, das `flashESP` ohne Angabe schreibt |
+| `espAppImage` | – | Anwendung, die `otaESP` ohne Angabe sendet |
 | `pollState` | 1 | `GetState` mitabfragen |
 | `pollErrors` | 1 | `GetErr` mitabfragen |
 | `pollMotors` | 0 | `GetMotors` mitabfragen |
@@ -689,6 +696,14 @@ Die Reading-Namen folgen bewusst denen von `74_BOTVAC.pm`, damit bestehende
 | `cmdCleanHouse`, `cmdCleanSpot`, `cmdCleanExplore`, `cmdCleanPersistent`, `cmdCleanStop`, `cmdCleanPause`, `cmdCleanResume`, `cmdSendToBase`, `cmdFindMe` | – | Konsolenkommando je set-Kommando überschreiben |
 | `httpPath`, `httpMethod` | `/api/serial`, POST | nur für den HTTP-Transport |
 | `disable` | 0 | Verbindung schließen und Abfrage anhalten |
+| `disabledForIntervals` | – | Zeitfenster, in denen das Gerät ruht (FHEM-Standardattribut) |
+
+Die Attribute rund um Aufzeichnung und Karte stehen bei den jeweiligen
+Abschnitten: `trackRuns`, `trackDir`, `trackInterval`, `trackPose`,
+`trackKeepDays`, `mapInterval` und `mapMaxRange` unter
+[Gefahrene Spur aufzeichnen](#gefahrene-spur-aufzeichnen), `planAuto`,
+`planSources` und `planCell` unter
+[Aus mehreren Läufen ein Grundriss](#aus-mehreren-läufen-ein-grundriss).
 
 ## Kommandosatz
 

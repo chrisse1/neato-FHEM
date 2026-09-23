@@ -37,7 +37,9 @@ use warnings;
 use POSIX qw(ceil floor);
 use JSON::PP;
 
-our $VERSION = "0.1.0";
+# Degrees to radians. The reference implementation in JavaScript calls it DEG
+# too; the two are read side by side often enough that it is worth the match.
+use constant DEG => 3.14159265358979 / 180;
 
 # The numbers the procedure runs on. Every one of them is in docs/plan-format.md
 # of the component repository; changing one here without changing it there
@@ -164,7 +166,7 @@ sub align_scans {
         $step = 1 if ($step < 1);
         my @beam;
         for (my $i = 0; $i < scalar(@$pts); $i += $step) {
-            my $radians = $pts->[$i][0] * 3.14159265358979 / 180;
+            my $radians = $pts->[$i][0] * DEG;
             push(@beam, [ cos($radians), sin($radians), $pts->[$i][1] / 1000.0 ]);
         }
         push(@beams, \@beam);
@@ -203,7 +205,7 @@ sub _extent {
     my ($minX, $maxX, $minY, $maxY);
 
     for (my $i = 0; $i < scalar(@$poses); $i++) {
-        my $heading = $poses->[$i]{th} * 3.14159265358979 / 180;
+        my $heading = $poses->[$i]{th} * DEG;
         my $ch = cos($heading);
         my $sh = sin($heading);
         for my $beam (@{ $beams->[$i] }) {
@@ -230,7 +232,7 @@ sub _density {
     my @counts = (0) x ($width * $height);
 
     for (my $i = 0; $i < scalar(@$beams); $i++) {
-        my $heading = $poses->[$i]{th} * 3.14159265358979 / 180;
+        my $heading = $poses->[$i]{th} * DEG;
         my $ch = cos($heading);
         my $sh = sin($heading);
         my $px = $poses->[$i]{x};
@@ -252,7 +254,7 @@ sub _density {
 
 sub _score_pose {
     my ($beam, $pose, $map, $bounds) = @_;
-    my $heading = $pose->{th} * 3.14159265358979 / 180;
+    my $heading = $pose->{th} * DEG;
     my $ch = cos($heading);
     my $sh = sin($heading);
     my $px = $pose->{x};
@@ -342,7 +344,7 @@ sub occupancy {
             # counter-clockwise in degrees and the lidar's zero looks where the
             # robot looks. The mirror image (th -> -th, a -> -a, +180) looks
             # nearly as tidy in a symmetric flat. See docs/ftui3-map.md.
-            my $radians = ($scan->{th} + $p->[0]) * 3.14159265358979 / 180;
+            my $radians = ($scan->{th} + $p->[0]) * DEG;
             my $x = $scan->{x} + $p->[1] / 1000.0 * cos($radians);
             my $y = $scan->{y} + $p->[1] / 1000.0 * sin($radians);
             push(@points, [ $x, $y ]);
@@ -588,7 +590,7 @@ sub register_to {
 
     my @angles;
     for (my $degrees = 0; $degrees < 360; $degrees += $s->{sweep}) {
-        push(@angles, $degrees * 3.14159265358979 / 180);
+        push(@angles, $degrees * DEG);
     }
 
     my $span = [ $b->{minX} - $s->{margin}, $b->{maxX} + $s->{margin},
@@ -602,7 +604,7 @@ sub register_to {
 
     for my $stage (@{ $s->{stages} }) {
         my ($degrees, $metres) = @$stage;
-        my $radians = $degrees * 3.14159265358979 / 180;
+        my $radians = $degrees * DEG;
         my $local = { %$best, score => fits($frame, $run->{walls}, $best->{angle}, $best->{x}, $best->{y}) };
 
         for (my $a = -3; $a <= 3; $a++) {

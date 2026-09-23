@@ -3389,8 +3389,9 @@ sub NeatoLocal_LeaveTestMode($) {
     <li><b>serialPorts</b> - lists the serial ports the machine has, with their
         stable by-id names and a guess at what is behind each. Answered locally,
         so it works before any bridge exists.</li>
-    <li><b>version</b>, <b>charger</b>, <b>motors</b>, <b>sensors</b>,
-        <b>usage</b>, <b>settings</b>, <b>wifiStatus</b></li>
+    <li><b>version</b>, <b>state</b>, <b>charger</b>, <b>battery</b>,
+        <b>motors</b>, <b>sensors</b>, <b>usage</b>, <b>warranty</b>,
+        <b>settings</b>, <b>wifiStatus</b></li>
   </ul><br>
 
   <a name="NeatoLocalattr"></a>
@@ -3635,15 +3636,13 @@ sub NeatoLocal_LeaveTestMode($) {
         verirrten Punkten liegt bei +0,05 --, es gibt deshalb bewusst keinen
         Filter darauf. Siehe docs/ftui3-map.md, und tools/stray_points.py, um
         die Messung auf einer neueren Aufzeichnung zu wiederholen.</li>
-    <li><b>serialPorts</b> - lists the serial ports the machine has, with their
-        stable by-id names and a guess at what is behind each. Answered locally,
-        so it works before any bridge exists.</li>
     <li><b>serialPorts</b> - listet die seriellen Schnittstellen des Rechners
         mit ihren gleichbleibenden by-id-Namen und einer Vermutung, was
         dahintersteckt. Wird lokal beantwortet und funktioniert daher auch,
         bevor es eine Bruecke gibt.</li>
-    <li><b>version</b>, <b>charger</b>, <b>motors</b>, <b>sensors</b>,
-        <b>usage</b>, <b>settings</b>, <b>wifiStatus</b></li>
+    <li><b>version</b>, <b>state</b>, <b>charger</b>, <b>battery</b>,
+        <b>motors</b>, <b>sensors</b>, <b>usage</b>, <b>warranty</b>,
+        <b>settings</b>, <b>wifiStatus</b></li>
   </ul><br>
 
   <a name="NeatoLocalattr"></a>
