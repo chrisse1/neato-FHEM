@@ -188,6 +188,97 @@ gepflegt. Die Werte aus `GetWarranty` sind die verlässlicheren.
 * `GetRobotPos Raw` / `GetRobotPos Smooth` – Position des Roboters
 * `SetUIError clearall` – alle Meldungen quittieren
 
+## No-Go-Linien: was bekannt ist und was nicht
+
+Der D6 konnte No-Go-Linien in der Neato-App. Die Firmware kann es also – die
+Frage ist nur, über welche Leitung sie hereinkamen. Dieser Abschnitt hält den
+Stand der Recherche fest, damit ihn niemand ein zweites Mal zusammensucht.
+
+**Über die Konsole kamen sie nicht.** Der vollständige `Help`-Satz sind 44
+Kommandos – Motoren, Sensoren, WLAN, Töne, Tasten, Testmodi. Kein einziges
+erwähnt eine Karte, eine Zone oder eine Grenze; das Wort „map" kommt im ganzen
+Dump nicht vor. Von den 16 `Set`-Kommandos setzt keines einen Sensorwert oder
+eine Geometrie.
+
+**Das beweist aber nichts**, und das ist der wichtigste Satz hier: `SetEvent`
+steht selbst nicht in der `Help`-Liste. Das Kommando, auf dem die halbe
+Anbindung dieses Moduls beruht und das den Roboter als einziges zur Basis
+schickt, ist in der Selbstauskunft unsichtbar. „Nicht dokumentiert" heißt bei
+dieser Firmware nicht „nicht vorhanden".
+
+**Wohin sie stattdessen gingen,** sagt der Roboter selbst. `GetVersion` nennt
+seine beiden Gegenstellen im Klartext:
+
+```
+Beehive URL, beehive.neatocloud.com
+Nucleo URL,  nucleo.neatocloud.com
+```
+
+Dorthin schickte er die Karte, von dort kamen die Zonen. Beide Hosts sind seit
+der Abschaltung tot. Ob der Roboter sie überhaupt noch auflöst, ist die
+billigste offene Frage dieses Themas – ein Blick ins DNS-Log des Routers. Wenn
+ja, wäre ein lokaler Stellvertreter der einzige bekannte Weg, auf dem die
+**Firmware selbst** die Linien einhält, mit ihrer eigenen Navigation und ihrer
+eigenen Sicherheit. Was dahinter liegt – Protokoll, TLS, ob er ohne gültigen
+Link etwas annimmt –, ist unbekannt.
+
+**Unabhängige Bestätigung:** [OpenNeato](https://github.com/renjfk/OpenNeato)
+benutzt 22 Konsolenkommandos, und keines davon berührt Karten oder Zonen. Das
+ist die gründlichste Reverse-Engineering-Arbeit an diesem Roboter. Dort wird
+die Funktion gerade als *Guided Clean* gebaut, und zwar durch **Selbstfahren**
+entlang eines aufgezeichneten Pfades – nicht dadurch, dass der Firmware Zonen
+übergeben werden.
+
+### Warum Selbstfahren teuer ist
+
+`SetMotor` ist der einzige Weg, die Räder zu stellen, und bringt drei Haken mit:
+
+```
+SetMotor - ... (TestMode Only)
+  Brush - Brush motor forward (Mutually exclusive with wheels and vacuum.)
+  WDTOn - Enable Motor Power Watchdog Toggle. It must be enable for motor power on.
+```
+
+* **TestMode.** Dort reinigt der Roboter nicht von selbst und gehorcht seinen
+  Tasten nicht. Wer fährt, übernimmt auch die Absturzsicherung.
+* **Fahren und Bürste/Saugen schließen sich in einem Kommando aus.** Ob sie
+  sich nacheinander kombinieren lassen, steht nirgends und ist ungeprüft.
+* **Ein Motor-Watchdog** muss laufend getoggelt werden. Über die Kette
+  FHEM → Brücke → Konsole ist das eine andere Klasse von Echtzeitanforderung
+  als alles, was dieses Modul sonst tut.
+
+### Die Magnetsensoren
+
+Vor der Cloud löste Neato das Problem mit magnetischen Begrenzungsstreifen, und
+die Hardware dafür ist noch da:
+
+```
+MagSensorType,1,MAG_SENSOR_ORIG
+MagSensorLeft,VAL,0
+MagSensorRight,VAL,0        (aus GetAnalogSensors)
+```
+
+Echtes Magnetband funktioniert damit heute, ohne jede Änderung am Modul. Der
+Gedanke, das Signal **vorzutäuschen** – eine Spule an den Sensoren, von der
+Brücke geschaltet, sobald die Position in eine verbotene Zone läuft – ist
+reizvoll, weil der Roboter dann mit seiner eigenen Navigation ausweicht. Er ist
+hier nicht umgesetzt: es gibt keinen Softwareweg dorthin, es wäre ein Eingriff
+in die Hardware jedes einzelnen Geräts, und offen bliebe, ob der Sensor auf ein
+statisches Feld überhaupt anspricht und was der Roboter tut, wenn das „Band"
+nicht aufhört. Messen ließe sich das: die Sensorwerte sind über
+`get <dev> sensors` lesbar.
+
+### Kurzfassung
+
+| Weg | Stand |
+|---|---|
+| Konsolenkommando für Zonen | keines bekannt, aber `Help` ist nachweislich unvollständig |
+| `SetEvent` | trägt nur Ereignisname und Schlüssel, kein Nutzlastfeld |
+| Lokaler Cloud-Stellvertreter | unbekannt, und die einzige Variante, bei der die Firmware selbst ausweicht |
+| Selbstfahren (*Guided Clean*) | machbar, aber TestMode, Watchdog und Sicherheit gehen an uns über |
+| Magnetband | funktioniert heute, ohne Software |
+| Magnetsignal vortäuschen | kein Softwareweg, Hardwareeingriff, ungeprüft |
+
 ## Finger weg
 
 `Upload` (Firmware), `ClearFiles All` (Logs), `SetUserSettings Reset`
