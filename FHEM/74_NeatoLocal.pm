@@ -38,7 +38,7 @@ use IO::Select;
 use Digest::MD5;
 use File::Path qw(make_path);
 
-my $NeatoLocal_VERSION = "0.22.0";
+my $NeatoLocal_VERSION = "0.23.0";
 
 # How long a flash or provisioning run may hold the device before the lock is
 # treated as left behind. Comfortably above the BlockingCall timeouts, so a run
@@ -52,6 +52,12 @@ my $NeatoLocal_flashLock = 600;
 # forked process, and nothing waits for it.
 my $NeatoLocal_planTimeout = 1800;
 my $NeatoLocal_planLock    = 2000;
+
+# How many scans a recording needs before it counts as a source for the plan.
+# At mapInterval 15 that is a little over twelve minutes of cleaning: a whole
+# room at least. A run stopped after four minutes had 16, full runs of a flat
+# have two hundred and more.
+my $NeatoLocal_planMinScans = 50;
 
 # Where the images come from when nothing else is configured. The project's CI
 # builds both on every firmware change, and the text file beside them carries
@@ -206,7 +212,7 @@ sub NeatoLocal_Initialize($) {
                       . "espAppImage trackRuns:0,1 trackDir trackInterval "
                       . "trackKeepDays mapInterval mapMaxRange "
                       . "trackPose:Smooth,Raw "
-                      . "planAuto:0,1 planSources planCell "
+                      . "planAuto:0,1 planSources planMinScans planCell "
                       . "pollErrors:0,1 pollMotors:0,1 pollState:0,1 pollSettings:0,1 useSetEvent:0,1 "
                       . "cmdCleanHouse cmdCleanSpot cmdCleanStop "
                       . "cmdCleanExplore cmdCleanPersistent "
@@ -1319,6 +1325,8 @@ sub NeatoLocal_TrackSweep($;$) {
     my ($hash, $now) = @_;
     my $name = $hash->{NAME};
 
+    NeatoLocal_PlanSweep($hash);
+
     my $days = AttrVal($name, "trackKeepDays", 14);
     return 0 if ($days !~ m/^\d+$/ || $days == 0);   # 0 keeps everything
 
@@ -1538,10 +1546,13 @@ sub NeatoLocal_TrackStop($) {
     NeatoLocal_TrackSweep($hash);
 
     # The plan is worth recomputing now, for the same reason -- but only if it
-    # was asked for. It takes minutes in a forked process, and a recording
-    # without scans cannot contribute to it anyway.
+    # was asked for, and only after a run the plan would actually take. It
+    # takes minutes in a forked process, and a run cut short is skipped there
+    # anyway: recomputing would only produce the plan from before.
+    my $minScans = AttrVal($name, "planMinScans", $NeatoLocal_planMinScans);
+    $minScans = 1 if ($minScans !~ m/^\d+$/ || $minScans < 1);
     NeatoLocal_PlanStart($hash, 0)
-        if (AttrVal($name, "planAuto", 0) && ($track->{scans} || 0) > 0);
+        if (AttrVal($name, "planAuto", 0) && ($track->{scans} || 0) >= $minScans);
 
     return undef;
 }
@@ -2540,7 +2551,8 @@ sub NeatoLocal_PlanBlocking($) {
 # this file, so the main process never carries it.
 sub NeatoLocal_PlanWork($) {
     my ($string) = @_;
-    my ($name, $dir, $device, $sources, $cell, $out) = split("\\|", $string, 6);
+    my ($name, $dir, $device, $sources, $minScans, $cell, $out)
+        = split("\\|", $string, 7);
     my $started = time();
 
     # Be polite. On a single core board this runs for minutes next to the rest
@@ -2552,16 +2564,9 @@ sub NeatoLocal_PlanWork($) {
     eval { require NeatoLocalPlan; 1; }
         or return "$name|NeatoLocalPlan.pm cannot be loaded from $lib: $@";
 
-    my $dh;
-    opendir($dh, $dir) or return "$name|$dir cannot be read: $!";
-    my @names = sort { $b cmp $a }
-                grep { m/^\Q$device\E-.*\.jsonl$/ } readdir($dh);
-    closedir($dh);
-
-    return "$name|no recordings of $device in $dir -- set trackRuns to 1 to record them"
-        if (!scalar(@names));
-
-    @names = @names[0 .. $sources - 1] if (scalar(@names) > $sources);
+    my ($names, $why) = NeatoLocal_PlanPick($dir, $device, $sources, $minScans);
+    return "$name|$why" if (!$names);
+    my @names = @$names;
 
     my @surveys;
     my @used;
@@ -2583,13 +2588,28 @@ sub NeatoLocal_PlanWork($) {
                         $stamp[5] + 1900, $stamp[4] + 1, $stamp[3],
                         $stamp[2], $stamp[1], $stamp[0]);
 
-    my $fh;
-    open($fh, ">", "$out.new") or return "$name|$out cannot be written: $!";
-    print $fh NeatoLocalPlan::as_json($plan, \@used, $built);
-    close($fh);
-    # Into place in one step: a panel polling the file must never catch it
-    # half written.
-    rename("$out.new", $out) or return "$name|$out cannot be replaced: $!";
+    # Every plan under a name of its own. The panel keys its copy on the name
+    # and the browser caches the file for a quarter of an hour, so a plan
+    # rewritten in place would never reach a page that is already open --
+    # a new name changes planFile, and that is what makes the panel look.
+    my $json = NeatoLocalPlan::as_json($plan, \@used, $built);
+    my $epoch = $started;
+    my $stable = $out;
+    ($out = $stable) =~ s/\.json$//;
+    $epoch++ while (-e "$out-$epoch.json");
+    $out = "$out-$epoch.json";
+
+    # The fixed name too, for markup that names the file instead of binding
+    # planFile. It does not refresh on its own, but it did not before either.
+    for my $path ($out, $stable) {
+        my $fh;
+        open($fh, ">", "$path.new") or return "$name|$path cannot be written: $!";
+        print $fh $json;
+        close($fh);
+        # Into place in one step: a panel polling the file must never catch
+        # it half written.
+        rename("$path.new", $path) or return "$name|$path cannot be replaced: $!";
+    }
 
     # The grades of the runs that were left out travel back rather than just
     # their number. The threshold they were measured against is an assumption,
@@ -2601,6 +2621,115 @@ sub NeatoLocal_PlanWork($) {
                    scalar(@{ $plan->{cells} }), $plan->{runs},
                    join(",", map { sprintf("%.2f", $_) } @dropped),
                    time() - $started);
+}
+
+# Which recordings go into the plan: the newest ones, but only those big
+# enough to have seen the flat. A run stopped after four minutes still fits --
+# its few walls are all in one room -- and would take the place of a full run,
+# leaving most of the plan one vote short. This is decided on the summary line,
+# before anything is read in full: registration is what costs minutes, not the
+# choice.
+#
+# Returns the file names, or undef and the reason there are none.
+sub NeatoLocal_PlanPick($$$$) {
+    my ($dir, $device, $sources, $minScans) = @_;
+
+    my $dh;
+    opendir($dh, $dir) or return (undef, "$dir cannot be read: $!");
+    my @offered = sort { $b cmp $a }
+                  grep { m/^\Q$device\E-.*\.jsonl$/ } readdir($dh);
+    closedir($dh);
+
+    return (undef, "no recordings of $device in $dir -- set trackRuns to 1 to record them")
+        if (!scalar(@offered));
+
+    my @names;
+    my $most = 0;
+    for my $file (@offered) {
+        last if (scalar(@names) >= $sources);
+        my $scans = NeatoLocal_PlanScans("$dir/$file");
+        $most = $scans if ($scans > $most);
+        push(@names, $file) if ($scans >= $minScans && $scans > 0);
+    }
+
+    return (undef, "none of the " . scalar(@offered) . " recordings has scans -- "
+                 . "without mapInterval only the track is recorded, and a track is not a plan")
+        if (!$most);
+    return (undef, "none of the " . scalar(@offered) . " recordings has $minScans "
+                 . "scans or more, the biggest has $most -- planMinScans decides "
+                 . "how big a run has to be")
+        if (!scalar(@names));
+
+    return \@names;
+}
+
+# How many scans a recording holds, from its summary line. That line is last
+# and TrackStop writes it; reading the tail is enough.
+#
+# A recording without one was not closed -- FHEM restarted during the run, or
+# the run is still going. Its scans are as good as any, so they are counted
+# rather than the recording dropped: that reads the file once, which is nothing
+# next to what the plan does with it afterwards.
+sub NeatoLocal_PlanScans($) {
+    my ($path) = @_;
+
+    my $fh;
+    open($fh, "<", $path) or return 0;
+    my $size = -s $fh || 0;
+    seek($fh, $size > 4096 ? $size - 4096 : 0, 0);
+    my $tail = do { local $/ = undef; <$fh> };
+    $tail = "" if (!defined($tail));
+    $tail =~ s/\s+$//;
+    my $last = (split(/\n/, $tail))[-1];
+
+    if (defined($last) && $last =~ m/^\{"summary":.*"scans":(\d+)/) {
+        close($fh);
+        return $1;
+    }
+
+    seek($fh, 0, 0);
+    my $scans = 0;
+    while (my $line = <$fh>) {
+        $scans++ if ($line =~ m/^\{"scan":/);
+    }
+    close($fh);
+
+    return $scans;
+}
+
+# Plans that a newer one has replaced. Each build writes a file of its own, so
+# without this they would pile up in trackDir. The newest stays whatever its
+# age -- trackKeepDays is about recordings, and a panel after a long pause
+# still wants a plan -- and so does the one planFile names, should a build
+# have written its file and then been cut short before saying so.
+sub NeatoLocal_PlanSweep($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    my $dir = AttrVal($name, "trackDir", "./www/neato");
+    my $dh;
+    return 0 if (!opendir($dh, $dir));
+    my @plans = sort { $b->[1] <=> $a->[1] }
+                map  { m/^plan-\Q$name\E-(\d+)\.json$/ ? [$_, $1] : () }
+                readdir($dh);
+    closedir($dh);
+
+    shift(@plans);
+    my $named = (split(m,/,, ReadingsVal($name, "planFile", "")))[-1];
+    $named = "" if (!defined($named));
+
+    my $removed = 0;
+    foreach my $plan (@plans) {
+        next if ($plan->[0] eq $named);
+        if (unlink("$dir/$plan->[0]")) {
+            $removed++;
+        }
+        else {
+            Log3 $name, 2, "NeatoLocal ($name) - cannot remove $dir/$plan->[0]: $!";
+        }
+    }
+
+    return $removed;
 }
 
 # Start a plan run, from "set buildPlan" or after a cleaning run.
@@ -2617,12 +2746,19 @@ sub NeatoLocal_PlanStart($$) {
                      . "behind ${age}s ago, taking it over";
     }
 
-    my $dir     = AttrVal($name, "trackDir", "./www/neato");
-    my $sources = AttrVal($name, "planSources", 8);
-    my $cell    = AttrVal($name, "planCell", 0.10);
+    my $dir      = AttrVal($name, "trackDir", "./www/neato");
+    my $sources  = AttrVal($name, "planSources", 8);
+    my $minScans = AttrVal($name, "planMinScans", $NeatoLocal_planMinScans);
+    my $cell     = AttrVal($name, "planCell", 0.10);
 
     if ($sources !~ m/^\d+$/ || $sources < 1) {
         my $why = "planSources is '$sources', expected how many recordings go in";
+        Log3 $name, 1, "NeatoLocal ($name) - $why";
+        return $manual ? $why : undef;
+    }
+    if ($minScans !~ m/^\d+$/) {
+        my $why = "planMinScans is '$minScans', expected how many scans a "
+                . "recording needs to go in";
         Log3 $name, 1, "NeatoLocal ($name) - $why";
         return $manual ? $why : undef;
     }
@@ -2638,7 +2774,7 @@ sub NeatoLocal_PlanStart($$) {
                  . "recordings in $dir, this takes minutes";
 
     BlockingCall("NeatoLocal_PlanBlocking",
-                 "$name|$dir|$name|$sources|$cell|$out",
+                 "$name|$dir|$name|$sources|$minScans|$cell|$out",
                  "NeatoLocal_PlanDone", $NeatoLocal_planTimeout,
                  "NeatoLocal_PlanAborted", $hash);
 
@@ -2681,6 +2817,10 @@ sub NeatoLocal_PlanDone($) {
     readingsBulkUpdate($hash, "planRuns", $runs);
     readingsBulkUpdate($hash, "planState", $state);
     readingsEndUpdate($hash, 1);
+
+    # Only now: until planFile names the new file, the old one is what panels
+    # are loading.
+    NeatoLocal_PlanSweep($hash);
 
     return undef;
 }
@@ -3324,10 +3464,13 @@ sub NeatoLocal_LeaveTestMode($) {
         the cloud nothing else keeps that clock right.</li>
     <li><b>button &lt;name&gt;</b> - simulates any UI or IR button press</li>
     <li><b>buildPlan</b> - computes one floor plan from the last recordings and
-        writes it as plan-&lt;device&gt;.json beside them. Runs in a forked,
+        writes it as plan-&lt;device&gt;-&lt;epoch&gt;.json beside them, a new
+        name every time so that an open FTUI page notices. Runs in a forked,
         niced process and takes minutes; the reading <b>planFile</b> names the
-        result. Needs recordings with lidar scans, so trackRuns and
-        mapInterval have to be set.<br>
+        result, and plans it has replaced are removed. A copy under the fixed
+        name plan-&lt;device&gt;.json is kept for markup that names the file
+        rather than binding planFile. Needs recordings with lidar scans, so
+        trackRuns and mapInterval have to be set.<br>
         <b>planState</b> carries the grade of every run that was left out, for
         instance "ok, 1 did not fit (0.33)". The threshold a run is measured
         against is an assumption and not a measurement, so it is worth logging
@@ -3422,12 +3565,22 @@ sub NeatoLocal_LeaveTestMode($) {
         Swept after each run; 0 keeps them for good. Only files this device
         wrote itself are ever removed</li>
     <li><b>planAuto</b> - compute the floor plan after every cleaning run,
-        default 0. A run without scans is skipped; there is nothing to build a
-        plan from.</li>
+        default 0. A run with fewer scans than planMinScans is skipped: the
+        plan would not take it, and recomputing would only produce the plan
+        from before.</li>
     <li><b>planSources</b> - how many recordings go into the plan, newest
         first, default 8. Every one of them costs about a minute, and runs
         from the same afternoon see the same furniture in the same place and
         agree for the wrong reason.</li>
+    <li><b>planMinScans</b> - how many scans a recording needs to count as a
+        source, default 50; that is about twelve minutes at mapInterval 15.
+        Smaller recordings are passed over for the next older one before
+        planSources is counted. A run stopped after a few minutes fits well
+        enough -- its few walls are all in one room -- but it would take the
+        place of a full run and leave most of the plan one vote short. The
+        number comes from the summary line at the end of the recording; a
+        recording without one (FHEM restarted during the run) has its scans
+        counted. 0 takes every recording with scans, as before 0.23.0.</li>
     <li><b>planCell</b> - the cell size of the plan in metres, default 0.10.
         It is written into the file, so the display uses whatever is set
         here.</li>
@@ -3572,10 +3725,14 @@ sub NeatoLocal_LeaveTestMode($) {
         haelt sonst nichts mehr diese Uhr richtig.</li>
     <li><b>button &lt;name&gt;</b> - simuliert einen beliebigen Tastendruck</li>
     <li><b>buildPlan</b> - rechnet aus den letzten Aufzeichnungen einen
-        gemeinsamen Grundriss und legt ihn als plan-&lt;Geraet&gt;.json daneben.
-        Laeuft in einem eigenen, heruntergestuften Prozess und dauert Minuten;
-        das Reading <b>planFile</b> nennt das Ergebnis. Braucht Aufzeichnungen
-        mit Lidar-Scans, also trackRuns und mapInterval.<br>
+        gemeinsamen Grundriss und legt ihn als plan-&lt;Geraet&gt;-&lt;Epoche&gt;.json
+        daneben, jedes Mal unter neuem Namen, damit eine offene FTUI-Seite es
+        merkt. Laeuft in einem eigenen, heruntergestuften Prozess und dauert
+        Minuten; das Reading <b>planFile</b> nennt das Ergebnis, abgeloeste
+        Plaene werden entfernt. Eine Kopie unter dem festen Namen
+        plan-&lt;Geraet&gt;.json bleibt fuer Markup, das die Datei direkt nennt
+        statt planFile zu binden. Braucht Aufzeichnungen mit Lidar-Scans, also
+        trackRuns und mapInterval.<br>
         <b>planState</b> nennt die Guete jedes ausgelassenen Laufs, etwa
         "ok, 1 did not fit (0.33)". Die Schwelle, an der gemessen wird, ist
         eine Annahme und keine Messung -- dieses Reading mitzuloggen lohnt sich
@@ -3674,12 +3831,23 @@ sub NeatoLocal_LeaveTestMode($) {
         Aufgeraeumt wird nach jedem Lauf; 0 behaelt alles. Entfernt werden nur
         Dateien, die dieses Geraet selbst geschrieben hat</li>
     <li><b>planAuto</b> - nach jeder Reinigung den Grundriss neu rechnen,
-        Standard 0. Ein Lauf ohne Scans wird uebersprungen, aus ihm entsteht
-        kein Grundriss.</li>
+        Standard 0. Ein Lauf mit weniger Scans als planMinScans wird
+        uebersprungen: der Grundriss nimmt ihn ohnehin nicht, neu rechnen
+        ergaebe nur den Stand von vorher.</li>
     <li><b>planSources</b> - wie viele Aufzeichnungen in den Grundriss eingehen,
         die neuesten zuerst, Standard 8. Jede kostet etwa eine Minute, und zwei
         Laeufe vom selben Nachmittag sehen dieselben Moebel am selben Platz und
         sind sich aus dem falschen Grund einig.</li>
+    <li><b>planMinScans</b> - wie viele Scans eine Aufzeichnung mindestens
+        haben muss, um als Quelle zu zaehlen, Standard 50; das sind bei
+        mapInterval 15 etwa zwoelf Minuten. Kleinere werden uebergangen, bevor
+        planSources abgezaehlt wird, und die naechstaeltere rueckt nach. Ein
+        nach wenigen Minuten abgebrochener Lauf passt zwar gut -- seine paar
+        Waende liegen alle in einem Raum --, verdraengt aber einen vollen Lauf,
+        und im Rest der Wohnung fehlt dann eine Stimme. Die Zahl steht in der
+        Summenzeile am Ende der Aufzeichnung; fehlt sie (FHEM wurde waehrend
+        des Laufs neu gestartet), werden die Scans gezaehlt. 0 nimmt jede
+        Aufzeichnung mit Scans, wie vor 0.23.0.</li>
     <li><b>planCell</b> - die Zellgroesse des Grundrisses in Metern, Standard
         0,10. Sie steht in der Datei, die Anzeige uebernimmt also, was hier
         eingestellt ist.</li>

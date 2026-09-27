@@ -430,8 +430,11 @@ attr Staubsauger planAuto 1
 set Staubsauger buildPlan
 ```
 
-The result is a JSON file next to the recordings, `plan-<device>.json`, named
-in the reading `planFile`. The FTUI component `<ftui-neato-map view="plan">`
+The result is a JSON file next to the recordings, `plan-<device>-<epoch>.json`,
+named in the reading `planFile`. Every plan gets a new name, so a page that is
+already open picks it up; the ones it replaces are removed, and a copy under
+the fixed name `plan-<device>.json` is kept for markup that names the file
+instead of binding `planFile`. The FTUI component `<ftui-neato-map view="plan">`
 loads and draws it; file format and procedure are in `docs/plan-format.md`
 of the
 [component repository](https://github.com/chrisse1/fhem-ftui-components-neatomaps).
@@ -440,6 +443,7 @@ of the
 |---|---|---|
 | `planAuto` | 0 | recompute after every cleaning |
 | `planSources` | 8 | how many recordings are used, newest first |
+| `planMinScans` | 50 | smaller recordings (a run stopped early) are passed over for the next older one |
 | `planCell` | 0.10 | cell size in metres; stored in the file, the display follows it |
 
 **It takes a while.** Every run is rotated and shifted against the frame
@@ -1080,7 +1084,11 @@ set Staubsauger buildPlan
 ```
 
 Das Ergebnis ist eine JSON-Datei neben den Aufzeichnungen,
-`plan-<Gerät>.json`, und das Reading `planFile` nennt sie. Die FTUI-Komponente
+`plan-<Gerät>-<Epoche>.json`, und das Reading `planFile` nennt sie. Jeder
+Grundriss bekommt einen neuen Namen, damit eine schon offene Seite ihn
+bemerkt; abgelöste werden entfernt, und eine Kopie unter dem festen Namen
+`plan-<Gerät>.json` bleibt für Markup, das die Datei direkt nennt, statt
+`planFile` zu binden. Die FTUI-Komponente
 `<ftui-neato-map view="plan">` lädt sie und zeichnet sie; Dateiformat und
 Verfahren stehen in `docs/plan-format.md` des
 [Komponenten-Repos](https://github.com/chrisse1/fhem-ftui-components-neatomaps).
@@ -1089,6 +1097,7 @@ Verfahren stehen in `docs/plan-format.md` des
 |---|---|---|
 | `planAuto` | 0 | nach jeder Reinigung neu rechnen |
 | `planSources` | 8 | wie viele Aufzeichnungen eingehen, die neuesten zuerst |
+| `planMinScans` | 50 | kleinere Aufzeichnungen (abgebrochene Läufe) werden übergangen, die nächstältere rückt nach |
 | `planCell` | 0.10 | Zellgröße in Metern; steht in der Datei, die Anzeige übernimmt sie |
 
 **Es dauert.** Jeder Lauf wird gegen den Rahmen gedreht und geschoben, bis er
