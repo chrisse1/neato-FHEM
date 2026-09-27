@@ -13,7 +13,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 369;
+use Test::More tests => 393;
 
 package main;
 
@@ -1237,8 +1237,8 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     NeatoLocal_Set($plh, "plan", "buildPlan");
     is(scalar(@BLOCKING), 1, "buildPlan runs in the background");
     is($BLOCKING[0][0], "NeatoLocal_PlanBlocking", "with the plan worker");
-    is($BLOCKING[0][1], "plan|$dir|plan|8|0.1|$dir/plan-plan.json",
-       "and is told where the recordings are, how many, the cell and where it goes");
+    is($BLOCKING[0][1], "plan|$dir|plan|8|50|0.1|$dir/plan-plan.json",
+       "and is told where the recordings are, how many, how big, the cell and where it goes");
     is($BLOCKING[0][3], 1800, "it may take half an hour");
 
     like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/has been computed/,
@@ -1268,11 +1268,17 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     is(scalar(@BLOCKING), 0, "still nothing forked");
 
     $attr{"plan"}{planCell} = 0.05;
+    $attr{"plan"}{planMinScans} = "wenige";
+    like(NeatoLocal_Set($plh, "plan", "buildPlan"), qr/how many scans/,
+         "planMinScans too");
+    is(scalar(@BLOCKING), 0, "and again nothing forked");
+
+    $attr{"plan"}{planMinScans} = 20;
     delete $plh->{helper}{planRunning};
     @BLOCKING = ();
     NeatoLocal_Set($plh, "plan", "buildPlan");
-    is($BLOCKING[0][1], "plan|$dir|plan|3|0.05|$dir/plan-plan.json",
-       "and both attributes reach the worker");
+    is($BLOCKING[0][1], "plan|$dir|plan|3|20|0.05|$dir/plan-plan.json",
+       "and all three attributes reach the worker");
 
     # What comes back.
     NeatoLocal_PlanDone("plan|OK|$dir/plan-plan.json|1816|4|0.33|97");
@@ -1318,9 +1324,11 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     use File::Temp qw(tempdir);
     my $dir = tempdir(CLEANUP => 1);
 
-    for my $case ([0, 5, 0, "planAuto off: nothing is computed after a run"],
+    for my $case ([0, 227, 0, "planAuto off: nothing is computed after a run"],
                   [1, 0, 0, "planAuto on but no scans: nothing to build a plan from"],
-                  [1, 5, 1, "planAuto on and scans recorded: the plan is recomputed"]) {
+                  [1, 16, 0, "planAuto on but a run cut short: the plan would not take it"],
+                  [1, 50, 1, "planAuto on and a run of planMinScans: the plan is recomputed"],
+                  [1, 227, 1, "planAuto on and a full run: the plan is recomputed"]) {
         my ($auto, $scans, $expected, $what) = @$case;
 
         my ($ah, $ar) = mkdev("auto NeatoLocal 192.168.1.42:23");
@@ -1357,16 +1365,17 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
              . "\"rotation\":0,\"seconds\":10}}\n";
     close($rec);
 
-    my $out = "$dir/plan-w.json";
-    my $result = NeatoLocal_PlanWork("w|$dir|w|8|0.1|$out");
-    my ($who, $state, $file, $cells, $runs) = split(/\|/, $result);
+    my $stable = "$dir/plan-w.json";
+    my $result = NeatoLocal_PlanWork("w|$dir|w|8|1|0.1|$stable");
+    my ($who, $state, $out, $cells, $runs) = split(/\|/, $result);
 
     is($state, "OK", "the worker builds a plan from a folder of recordings")
         or diag($result);
-    is($file, $out, "and says where it put it");
+    like($out, qr{^\Q$dir\E/plan-w-\d+\.json$}, "and says where it put it, under a name of its own");
     is($runs, 1, "one recording, one run in the plan");
     ok($cells > 0, "and it has cells in it");
     ok(-e $out && !-e "$out.new", "the file is in place and the half written one is gone");
+    ok(-e $stable && !-e "$stable.new", "and so is the one under the fixed name");
 
     my $written = eval {
         open(my $fh, "<", $out) or die($!);
@@ -1388,15 +1397,141 @@ is(NeatoLocal_LinkUp({ TRANSPORT => "serial", USBDev => 1 }), 1,
     # A folder without recordings, and one whose recordings have no scans, are
     # the two ways this goes wrong in practice. Both have to say which it was.
     my $empty = tempdir(CLEANUP => 1);
-    like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/no recordings/,
+    like(NeatoLocal_PlanWork("w|$empty|w|8|1|0.1|$empty/plan-w.json"), qr/no recordings/,
          "an empty folder says there is nothing to build from");
 
     open(my $bare, ">", "$empty/w-2026-09-20_11-00-00.jsonl") or die($!);
     print $bare "{\"device\":\"w\",\"started\":\"2026-09-20_11-00-00\",\"unit\":\"m\"}\n";
     print $bare "{\"t\":1.0,\"x\":0,\"y\":0,\"th\":0}\n";
     close($bare);
-    like(NeatoLocal_PlanWork("w|$empty|w|8|0.1|$empty/plan-w.json"), qr/mapInterval/,
+    like(NeatoLocal_PlanWork("w|$empty|w|8|1|0.1|$empty/plan-w.json"), qr/mapInterval/,
          "and a track without scans points at the attribute that records them");
+}
+
+# Which recordings go in. The newest planSources, but a run cut short is not
+# one of them: on 27.09. a four minute run with 16 scans fitted well enough,
+# took the place of a full run and left most of the plan one vote short. It
+# has to be skipped for the next older full run, and decided on the summary
+# line -- the recordings here have nothing else in them, and the choice must
+# not need anything else.
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my $record = sub {
+        my ($stamp, $summary, @scans) = @_;
+        open(my $fh, ">", "$dir/s-$stamp.jsonl") or die($!);
+        print $fh "{\"device\":\"s\",\"started\":\"$stamp\",\"unit\":\"m\"}\n";
+        print $fh "{\"scan\":{\"x\":0,\"y\":0,\"th\":0,\"pts\":[[0,2000]]}}\n" for (@scans);
+        print $fh "{\"summary\":{\"points\":1358,\"scans\":$summary,"
+                . "\"distance\":358.6,\"rotation\":47064,\"seconds\":3420}}\n"
+            if (defined($summary));
+        close($fh);
+    };
+    $record->("2026-09-27_16-13-24", 227);
+    $record->("2026-09-27_16-03-24", 16);
+    $record->("2026-09-27_14-25-23", 227);
+    $record->("2026-09-25_10-00-48", 203);
+    $record->("2026-09-24_09-00-00", 227);
+    $record->("2026-09-20_09-00-00", 227);
+
+    my ($names, $why) = NeatoLocal_PlanPick($dir, "s", 4, 50);
+    is_deeply($names, ["s-2026-09-27_16-13-24.jsonl", "s-2026-09-27_14-25-23.jsonl",
+                       "s-2026-09-25_10-00-48.jsonl", "s-2026-09-24_09-00-00.jsonl"],
+              "the run cut short is skipped for the next older full one") or diag($why);
+
+    ($names) = NeatoLocal_PlanPick($dir, "s", 4, 0);
+    ok(grep({ $_ eq "s-2026-09-27_16-03-24.jsonl" } @$names),
+       "planMinScans 0 takes it again, as before");
+
+    ($names, $why) = NeatoLocal_PlanPick($dir, "s", 4, 500);
+    ok(!$names, "a threshold nothing reaches builds nothing");
+    like($why, qr/has 500 scans or more, the biggest has 227/,
+         "and says how far off the recordings are");
+
+    # A recording without a summary line was not closed: FHEM restarted during
+    # the run, or it is still going. Its scans are counted instead -- a full
+    # run is not thrown away for a missing last line, and a fragment still
+    # does not get in.
+    $record->("2026-09-28_08-00-00", undef, 1 .. 60);
+    $record->("2026-09-28_09-00-00", undef, 1 .. 10);
+    is(NeatoLocal_PlanScans("$dir/s-2026-09-28_08-00-00.jsonl"), 60,
+       "without a summary the scans are counted");
+    ($names) = NeatoLocal_PlanPick($dir, "s", 2, 50);
+    is_deeply($names, ["s-2026-09-28_08-00-00.jsonl", "s-2026-09-27_16-13-24.jsonl"],
+              "so a full run without one goes in and a fragment without one does not");
+
+    # Cut off in the middle of a line, as a file being written can be.
+    open(my $half, ">>", "$dir/s-2026-09-28_08-00-00.jsonl") or die($!);
+    print $half "{\"scan\":{\"x\":0,\"y\":0,\"th\":0,\"pts\":[[0,20";
+    close($half);
+    is(NeatoLocal_PlanScans("$dir/s-2026-09-28_08-00-00.jsonl"), 61,
+       "a half written last line is no reason to fail");
+    is(NeatoLocal_PlanScans("$dir/s-nowhere.jsonl"), 0, "and a file that is gone has none");
+
+    # The real thing, whose last line is a scan: it was cut from a longer run.
+    is(NeatoLocal_PlanScans("docs/reference-track-botvac-d6.jsonl"), 10,
+       "the reference recording, which has no summary, has its scans counted");
+}
+
+# Every plan under a name of its own, so that planFile changes with each one.
+# The panel keys its copy on that name, and FHEMWEB lets the browser keep a
+# static file for a quarter of an hour: a plan rewritten under the same name
+# never reaches a page that is already open.
+{
+    use File::Temp qw(tempdir);
+    my $dir = tempdir(CLEANUP => 1);
+
+    my ($vh) = mkdev("v NeatoLocal 192.168.1.42:23");
+    $attr{"v"}{trackDir} = $dir;
+
+    open(my $rec, ">", "$dir/v-2026-09-20_10-00-00.jsonl") or die($!);
+    print $rec "{\"device\":\"v\",\"started\":\"2026-09-20_10-00-00\",\"unit\":\"m\"}\n";
+    for my $at (0, 1) {
+        print $rec "{\"scan\":{\"x\":$at,\"y\":0,\"th\":0,\"pts\":["
+                 . "[0,2000],[90,2000],[180,2000],[270,2000]]}}\n";
+    }
+    close($rec);
+
+    my @files;
+    for my $run (1, 2) {
+        my $result = NeatoLocal_PlanWork("v|$dir|v|8|1|0.1|$dir/plan-v.json");
+        NeatoLocal_PlanDone($result);
+        push(@files, ReadingsVal("v", "planFile", ""));
+    }
+    like($files[0], qr{/plan-v-\d+\.json$}, "planFile names a versioned file");
+    isnt($files[1], $files[0], "and a second plan changes it");
+    ok(!-e $files[0], "the plan it replaced is gone");
+    ok(-e $files[1], "the new one is there");
+    ok(-e "$dir/plan-v.json", "and so is the fixed name, for markup that names the file");
+
+    # The sweep after a run: the newest plan stays whatever its age, even
+    # when it is older than trackKeepDays. Otherwise a panel after a
+    # fortnight's holiday would have no plan at all.
+    my $old = time() - 30 * 86400;
+    for my $plan ("plan-v-1000.json", "plan-v-2000.json") {
+        open(my $fh, ">", "$dir/$plan") or die($!);
+        close($fh);
+        utime($old, $old, "$dir/$plan");
+    }
+    unlink($files[1]);
+    readingsSingleUpdate($vh, "planFile", "$dir/plan-v-2000.json", 1);
+    utime($old, $old, "$dir/v-2026-09-20_10-00-00.jsonl");
+    NeatoLocal_TrackSweep($vh);
+    ok(!-e "$dir/plan-v-1000.json", "the sweep removes the plan before the last one");
+    ok(-e "$dir/plan-v-2000.json", "and keeps the last, older than trackKeepDays or not");
+    ok(-e "$dir/plan-v.json", "and never touches the fixed name");
+    ok(!-e "$dir/v-2026-09-20_10-00-00.jsonl", "while the old recording goes as before");
+
+    # A build that wrote its file and was cut short before saying so leaves a
+    # newer file than the one planFile names. Both stay.
+    for my $plan ("plan-v-3000.json") {
+        open(my $fh, ">", "$dir/$plan") or die($!);
+        close($fh);
+    }
+    NeatoLocal_PlanSweep($vh);
+    ok(-e "$dir/plan-v-2000.json" && -e "$dir/plan-v-3000.json",
+       "the plan planFile names is kept even when a newer one exists");
 }
 
 # --- the tilt of the scan plane --------------------------------------------

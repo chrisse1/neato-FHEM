@@ -225,7 +225,11 @@ dann liegt auch die Schwelle darin, statt geraten zu sein.
 Das oben Beschriebene ist ein einzelner Lauf. Mehrere zusammengelegt ergeben
 einen Grundriss, und den rechnet **das Modul**, nicht die Anzeige:
 
-* Datei: `plan-<Gerät>.json` in `trackDir`, also neben den Aufzeichnungen
+* Datei: `plan-<Gerät>-<Epoche>.json` in `trackDir`, also neben den
+  Aufzeichnungen, bei jedem Neubau unter neuem Namen: die Komponente merkt
+  sich den Plan unter dem Namen, und FHEMWEB lässt den Browser statische
+  Dateien eine Viertelstunde cachen. Abgelöste Stände räumt das Modul weg,
+  eine Kopie unter `plan-<Gerät>.json` bleibt für fest eingetragenes Markup
 * Reading: **`planFile`** nennt den Pfad, genau wie `trackFile` den der
   laufenden Sitzung – die Komponente kann ihn binden, statt ihn als Attribut
   eingetragen zu bekommen
